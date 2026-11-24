@@ -31,10 +31,10 @@ env:
 
 jobs:
   # ============================================================================
-  # 1. Android Build (APK + AppBundle)
+  # 1. Android Build (APK)
   # ============================================================================
   build-android:
-    name: Build Android (APK & AAB)
+    name: Build Android (APK)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -61,19 +61,19 @@ jobs:
       - name: Install dependencies
         run: flutter pub get
 
-      - name: Build Android Release APK
-        run: flutter build apk --release --no-tree-shake-icons
-
-      - name: Build Android Split-per-ABI APKs
-        run: flutter build apk --release --split-per-abi --no-tree-shake-icons
-
-      - name: Prepare Android artifacts
+      - name: Build Android Universal Release APK
         run: |
           mkdir -p dist/android
+          flutter build apk --release --no-tree-shake-icons
           cp build/app/outputs/flutter-apk/app-release.apk dist/android/${{ env.APP_NAME }}-Android-universal.apk
+
+      - name: Build Android Split-per-ABI APKs
+        run: |
+          flutter build apk --release --split-per-abi --no-tree-shake-icons
           cp build/app/outputs/flutter-apk/app-arm64-v8a-release.apk dist/android/${{ env.APP_NAME }}-Android-arm64-v8a.apk || true
           cp build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk dist/android/${{ env.APP_NAME }}-Android-armeabi-v7a.apk || true
           cp build/app/outputs/flutter-apk/app-x86_64-release.apk dist/android/${{ env.APP_NAME }}-Android-x86_64.apk || true
+          ls -lh dist/android/
 
       - name: Upload Android Artifacts
         uses: actions/upload-artifact@v4
@@ -116,6 +116,7 @@ jobs:
           cp -r build/ios/iphoneos/Runner.app Payload/
           zip -qry dist/ios/${{ env.APP_NAME }}-iOS-unsigned.ipa Payload
           rm -rf Payload
+          ls -lh dist/ios/
 
       - name: Upload iOS Artifact
         uses: actions/upload-artifact@v4
@@ -153,16 +154,20 @@ jobs:
       - name: Build macOS Release
         run: flutter build macos --release --no-tree-shake-icons
 
-      - name: Package macOS .app into .dmg and .zip
+      - name: Package macOS .app into .zip and .dmg
         run: |
-          mkdir -p dist/macos dmg_staging
-          APP_PATH=$(find build/macos/Build/Products/Release -maxdepth 1 -name "*.app" | head -n 1)
-          echo "Found macOS App at: $APP_PATH"
-          cp -R "$APP_PATH" "dmg_staging/${{ env.APP_NAME }}.app"
-          ln -s /Applications dmg_staging/Applications
-          hdiutil create -volname "${{ env.APP_NAME }}" -srcfolder dmg_staging -ov -format UDZO "dist/macos/${{ env.APP_NAME }}-macOS.dmg"
+          mkdir -p "${{ github.workspace }}/dist/macos"
           cd build/macos/Build/Products/Release
           zip -qry "${{ github.workspace }}/dist/macos/${{ env.APP_NAME }}-macOS-app.zip" *.app
+          cd "${{ github.workspace }}"
+          mkdir -p dmg_staging
+          APP_PATH=$(find build/macos/Build/Products/Release -maxdepth 1 -name "*.app" | head -n 1)
+          cp -R "$APP_PATH" "dmg_staging/${{ env.APP_NAME }}.app"
+          ln -s /Applications dmg_staging/Applications
+          for i in 1 2 3; do
+            hdiutil create -volname "${{ env.APP_NAME }}" -srcfolder dmg_staging -ov -format UDZO "dist/macos/${{ env.APP_NAME }}-macOS.dmg" && break || sleep 3
+          done
+          ls -lh dist/macos/
 
       - name: Upload macOS Artifacts
         uses: actions/upload-artifact@v4
@@ -210,6 +215,7 @@ jobs:
             $releaseDir = "build/windows/runner/Release"
           }
           Compress-Archive -Path "$releaseDir/*" -DestinationPath "dist/windows/${{ env.APP_NAME }}-Windows-x64.zip" -Force
+          Get-ChildItem "dist/windows"
 
       - name: Upload Windows Artifact
         uses: actions/upload-artifact@v4
@@ -219,45 +225,55 @@ jobs:
           retention-days: 30
 
   # ============================================================================
-  # 5. Publish GitHub Release (Automatically runs after successful push/tag/manual build)
+  # 5. Publish GitHub Release (Runs with always() as long as at least 1 build succeeded)
   # ============================================================================
   release:
     name: Publish Multi-Platform Release
     needs: [ build-android, build-ios, build-macos, build-windows ]
-    if: github.event_name != 'pull_request' && inputs.create_release != false
+    if: >-
+      always() &&
+      github.event_name != 'pull_request' &&
+      inputs.create_release != false &&
+      (needs.build-android.result == 'success' ||
+       needs.build-ios.result == 'success' ||
+       needs.build-macos.result == 'success' ||
+       needs.build-windows.result == 'success')
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - name: Checkout repository (required for tag/release creation on branch push)
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Download All Build Artifacts
         uses: actions/download-artifact@v4
         with:
-          path: release_assets
+          path: publish_files
+          merge-multiple: true
 
-      - name: Collect All Packages
+      - name: Verify Downloaded Release Assets
         run: |
-          mkdir -p publish_files
-          find release_assets -type f \( -name "*.apk" -o -name "*.ipa" -o -name "*.dmg" -o -name "*.zip" \) -exec cp {} publish_files/ \;
-          ls -lh publish_files/
+          ls -la publish_files/
 
-      - name: Create GitHub Release
+      - name: Create or Update GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('v1.0.{0}', github.run_number) }}
           target_commitish: ${{ github.sha }}
-          name: "${{ env.APP_NAME }} v1.0.${{ github.run_number }} (${{ github.ref_name }})"
+          name: "${{ env.APP_NAME }} ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('v1.0.{0}', github.run_number) }}"
           body: |
             ### 🎵 ${{ env.APP_NAME }} 多平台自动构建发布 (Build #${{ github.run_number }})
             - **Commit**: `${{ github.sha }}`
-            - **包含平台产物**：
-              - 📱 **Android**: `AuraMusic-Android-universal.apk` & 分架构 APK (`arm64-v8a`, `armeabi-v7a`, `x86_64`)
-              - 🍎 **iOS**: `AuraMusic-iOS-unsigned.ipa` (免签名 IPA 安装包)
-              - 💻 **macOS**: `AuraMusic-macOS.dmg` & `AuraMusic-macOS-app.zip`
-              - 🖥️ **Windows**: `AuraMusic-Windows-x64.zip` (64位便携免安装包)
-          files: publish_files/*
+            - **各平台构建状态**：
+              - 📱 **Android**: `${{ needs.build-android.result }}`
+              - 🍎 **iOS**: `${{ needs.build-ios.result }}`
+              - 💻 **macOS**: `${{ needs.build-macos.result }}`
+              - 🖥️ **Windows**: `${{ needs.build-windows.result }}`
+          files: |
+            publish_files/*.apk
+            publish_files/*.ipa
+            publish_files/*.dmg
+            publish_files/*.zip
           generate_release_notes: true
           draft: false
           prerelease: false

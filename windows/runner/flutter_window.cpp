@@ -145,9 +145,8 @@ void FlutterWindow::RegisterAuraMusicChannel() {
 
           std::wstring len_str = MciQuery(L"status auraplayer length");
           int duration_ms = 0;
-          try {
-            if (!len_str.empty()) duration_ms = std::stoi(len_str);
-          } catch (...) {
+          if (!len_str.empty()) {
+            duration_ms = _wtoi(len_str.c_str());
           }
 
           flutter::EncodableMap res;
@@ -219,11 +218,8 @@ void FlutterWindow::RegisterAuraMusicChannel() {
           std::wstring len_str = MciQuery(L"status auraplayer length");
           int pos_ms = -1;
           int len_ms = -1;
-          try {
-            if (!pos_str.empty()) pos_ms = std::stoi(pos_str);
-            if (!len_str.empty()) len_ms = std::stoi(len_str);
-          } catch (...) {
-          }
+          if (!pos_str.empty()) pos_ms = _wtoi(pos_str.c_str());
+          if (!len_str.empty()) len_ms = _wtoi(len_str.c_str());
           flutter::EncodableMap res;
           res[flutter::EncodableValue("positionMs")] =
               flutter::EncodableValue(pos_ms);
