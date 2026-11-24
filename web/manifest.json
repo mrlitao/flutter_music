@@ -1,0 +1,11 @@
+{
+    "name": "AuraMusic 全息毛玻璃音乐播放器",
+    "short_name": "AuraMusic",
+    "start_url": ".",
+    "display": "standalone",
+    "background_color": "#060913",
+    "theme_color": "#06B6D4",
+    "description": "Cross-platform Frosted Glass Music Player with Audio-Reactive Fluid Wave Ripples.",
+    "orientation": "any",
+    "prefer_related_applications": false
+}
