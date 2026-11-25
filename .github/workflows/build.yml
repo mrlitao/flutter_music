@@ -233,7 +233,6 @@ jobs:
     if: >-
       always() &&
       github.event_name != 'pull_request' &&
-      inputs.create_release != false &&
       (needs.build-android.result == 'success' ||
        needs.build-ios.result == 'success' ||
        needs.build-macos.result == 'success' ||
