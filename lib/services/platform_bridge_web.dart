@@ -9,8 +9,11 @@ import 'lrc_parser.dart';
 import 'metadata_parser.dart';
 
 /// Web (Chrome / Edge) implementation of [PlatformAudioBridge].
-/// Uses HTML5 `<audio>` + Web Audio API `AnalyserNode` (both frequency & time-domain data)
-/// for real-time melody/rhythm extraction and sound playback.
+/// - Uses HTML5 `<audio>` + Web Audio `AnalyserNode` for real-time sound & FFT.
+/// - Uses browser **IndexedDB (`AuraMusicDB`)** to persistently store imported local audio `Blob`s,
+///   `.lrc` lyrics, play counts, and favorites so they survive browser restarts & can be deleted.
+/// - Properly handles file/folder picker cancellation (`oncancel` + `window.onfocus` fallback) so
+///   loading never gets stuck!
 class PlatformAudioBridge {
   static const Set<String> supportedExtensions = {
     '.mp3',
@@ -22,6 +25,9 @@ class PlatformAudioBridge {
     '.ogg',
     '.wma',
   };
+
+  static const String _dbName = 'AuraMusicDB';
+  static const String _storeName = 'imported_tracks';
 
   JSObject? _audioElement;
   JSObject? _audioContext;
@@ -37,8 +43,6 @@ class PlatformAudioBridge {
       final audioCtor = globalContext['Audio'] as JSFunction?;
       if (audioCtor != null) {
         _audioElement = audioCtor.callAsConstructor<JSObject>();
-        // Note: Do NOT set crossOrigin = 'anonymous' on local blob: URLs,
-        // as some Chromium builds zero out MediaElementAudioSourceNode on blob URLs with crossOrigin set.
         _audioElement!['preload'] = 'auto'.toJS;
       }
     } catch (_) {}
@@ -55,8 +59,6 @@ class PlatformAudioBridge {
       final source =
           _audioContext!.callMethod<JSObject>('createMediaElementSource'.toJS, _audioElement!);
       _analyserNode = _audioContext!.callMethod<JSObject>('createAnalyser'.toJS);
-      // Higher FFT resolution (512 -> 256 frequency bins) + fast response (low smoothingTimeConstant)
-      // so every melody note and drum transient jumps crisply without lag!
       _analyserNode!['fftSize'] = 512.toJS;
       _analyserNode!['minDecibels'] = (-85).toJS;
       _analyserNode!['maxDecibels'] = (-12).toJS;
@@ -203,7 +205,6 @@ class PlatformAudioBridge {
     }
   }
 
-  /// Reads real-time 32-band FFT frequency + time-domain RMS envelope directly from Chrome's Web Audio `AnalyserNode`!
   List<double>? getRealtimeFrequencyBins() {
     if (_analyserNode == null || _freqDataArray == null || _timeDataArray == null) return null;
     try {
@@ -215,7 +216,6 @@ class PlatformAudioBridge {
       final int len = freqBytes.length;
       if (len <= 0) return null;
 
-      // Compute real-time waveform RMS amplitude from time-domain samples (centered at 128)
       double rmsAcc = 0.0;
       int nonZeroFreqSum = 0;
       final int sampleCount = math.min(128, len);
@@ -229,10 +229,8 @@ class PlatformAudioBridge {
       if (nonZeroFreqSum == 0) return null;
 
       final double rms = math.sqrt(rmsAcc / sampleCount).clamp(0.0, 1.0);
-      // Dynamic envelope gate: boosts musical peaks and suppresses flat background hum
       final double rmsBoost = (0.55 + rms * 1.45).clamp(0.45, 1.85);
 
-      // Map logarithmic musical frequency sub-bands (from 40Hz sub-bass to 10kHz treble) into 32 bins
       final out = List<double>.filled(32, 0.02);
       for (int b = 0; b < 32; b++) {
         final int startBin = (math.pow(b / 32.0, 1.75) * 140).floor().clamp(1, len - 2);
@@ -245,8 +243,6 @@ class PlatformAudioBridge {
           final double v = freqBytes[k] / 255.0;
           if (v > bandPeak) bandPeak = v;
         }
-        // Apply non-linear contrast curve (pow 1.7) so quiet passages stay calm
-        // and melody notes / beats jump sharply!
         final double contrasted = math.pow(bandPeak, 1.7).toDouble() * rmsBoost;
         out[b] = contrasted.clamp(0.02, 1.0);
       }
@@ -254,6 +250,204 @@ class PlatformAudioBridge {
     } catch (_) {
       return null;
     }
+  }
+
+  // ===========================================================================
+  // IndexedDB Persistence for Web Imported Audio Files
+  // ===========================================================================
+  Future<JSObject?> _openDb() async {
+    final completer = Completer<JSObject?>();
+    try {
+      final idb = globalContext['indexedDB'] as JSObject?;
+      if (idb == null) {
+        return null;
+      }
+      final req = idb.callMethod<JSObject>('open'.toJS, _dbName.toJS, 1.toJS);
+
+      req['onupgradeneeded'] = ((JSObject event) {
+        try {
+          final target = event['target'] as JSObject;
+          final db = target['result'] as JSObject;
+          final storeNames = db['objectStoreNames'] as JSObject;
+          final contains =
+              (storeNames.callMethod<JSBoolean>('contains'.toJS, _storeName.toJS)).toDart;
+          if (!contains) {
+            final opts = JSObject();
+            opts['keyPath'] = 'id'.toJS;
+            db.callMethod<JSAny?>('createObjectStore'.toJS, _storeName.toJS, opts);
+          }
+        } catch (_) {}
+      }).toJS;
+
+      req['onsuccess'] = ((JSObject event) {
+        final target = event['target'] as JSObject;
+        if (!completer.isCompleted) {
+          completer.complete(target['result'] as JSObject?);
+        }
+      }).toJS;
+
+      req['onerror'] = ((JSAny? _) {
+        if (!completer.isCompleted) completer.complete(null);
+      }).toJS;
+    } catch (_) {
+      if (!completer.isCompleted) completer.complete(null);
+    }
+    return completer.future;
+  }
+
+  Future<void> _putRecordToIndexedDb({
+    required String id,
+    required String fileName,
+    required String folderPath,
+    required int fileSize,
+    required int importedTimestampMs,
+    required JSObject audioBlob,
+    Uint8List? lrcBytes,
+  }) async {
+    final db = await _openDb();
+    if (db == null) return;
+    final completer = Completer<void>();
+    try {
+      final tx = db.callMethod<JSObject>('transaction'.toJS, _storeName.toJS, 'readwrite'.toJS);
+      final store = tx.callMethod<JSObject>('objectStore'.toJS, _storeName.toJS);
+      final record = JSObject();
+      record['id'] = id.toJS;
+      record['fileName'] = fileName.toJS;
+      record['folderPath'] = folderPath.toJS;
+      record['fileSize'] = fileSize.toJS;
+      record['importedTimestampMs'] = importedTimestampMs.toJS;
+      record['playCount'] = 0.toJS;
+      record['isFavorite'] = false.toJS;
+      record['audioBlob'] = audioBlob;
+      if (lrcBytes != null && lrcBytes.isNotEmpty) {
+        record['lrcBytes'] = lrcBytes.toJS;
+      }
+      store.callMethod<JSAny?>('put'.toJS, record);
+
+      tx['oncomplete'] = ((JSAny? _) {
+        if (!completer.isCompleted) completer.complete();
+      }).toJS;
+      tx['onerror'] = ((JSAny? _) {
+        if (!completer.isCompleted) completer.complete();
+      }).toJS;
+      await completer.future;
+    } catch (_) {
+      if (!completer.isCompleted) completer.complete();
+    }
+  }
+
+  /// Restores previously imported local music files from Chrome's IndexedDB (`AuraMusicDB`).
+  Future<List<Track>> loadSavedImportedTracks() async {
+    final db = await _openDb();
+    if (db == null) return const [];
+
+    final completer = Completer<List<JSObject>>();
+    try {
+      final tx = db.callMethod<JSObject>('transaction'.toJS, _storeName.toJS, 'readonly'.toJS);
+      final store = tx.callMethod<JSObject>('objectStore'.toJS, _storeName.toJS);
+      final req = store.callMethod<JSObject>('getAll'.toJS);
+      req['onsuccess'] = ((JSAny? _) {
+        final res = req['result'] as JSArray?;
+        if (res != null) {
+          completer.complete(res.toDart.cast<JSObject>());
+        } else {
+          completer.complete(const []);
+        }
+      }).toJS;
+      req['onerror'] = ((JSAny? _) {
+        if (!completer.isCompleted) completer.complete(const []);
+      }).toJS;
+    } catch (_) {
+      if (!completer.isCompleted) completer.complete(const []);
+    }
+
+    final records = await completer.future;
+    if (records.isEmpty) return const [];
+
+    final urlObj = globalContext['URL'] as JSObject;
+    final restored = <Track>[];
+
+    for (int i = 0; i < records.length; i++) {
+      try {
+        final rec = records[i];
+        final id = (rec['id'] as JSString).toDart;
+        final fileName = (rec['fileName'] as JSString).toDart;
+        final folderPath = (rec['folderPath'] as JSString).toDart;
+        final fileSize = (rec['fileSize'] as JSNumber).toDartInt;
+        final importedMs = (rec['importedTimestampMs'] as JSNumber?)?.toDartInt ?? 0;
+        final playCount = (rec['playCount'] as JSNumber?)?.toDartInt ?? 0;
+        final isFavorite = (rec['isFavorite'] as JSBoolean?)?.toDart ?? false;
+        final audioBlob = rec['audioBlob'] as JSObject;
+
+        final sliceEnd = math.min(fileSize, 512 * 1024);
+        final headerBlob = audioBlob.callMethod<JSObject>('slice'.toJS, 0.toJS, sliceEnd.toJS);
+        final buf = (await (headerBlob.callMethod<JSPromise>('arrayBuffer'.toJS)).toDart)
+            as JSArrayBuffer;
+        final headerBytes = buf.toDart.asUint8List();
+
+        List<LyricLine> companionLyrics = const [];
+        final lrcJs = rec['lrcBytes'] as JSUint8Array?;
+        if (lrcJs != null) {
+          companionLyrics = LrcParser.parseBytes(lrcJs.toDart);
+        }
+
+        final blobUrl = urlObj.callMethod<JSString>('createObjectURL'.toJS, audioBlob).toDart;
+
+        final track = AudioMetadataParser.parseBytes(
+          id: id,
+          filePath: blobUrl,
+          fileName: fileName,
+          folderPath: folderPath,
+          fileSize: fileSize,
+          headerBytes: headerBytes,
+          companionLyrics: companionLyrics,
+          indexSeed: i,
+        ).copyWith(
+          importedTimestampMs: importedMs,
+          playCount: playCount,
+          isFavorite: isFavorite,
+        );
+        restored.add(track);
+      } catch (_) {}
+    }
+
+    return restored;
+  }
+
+  /// Syncs updated favorite / playCount states back to IndexedDB.
+  Future<void> saveImportedTracks(List<Track> tracks) async {
+    final db = await _openDb();
+    if (db == null) return;
+    for (final track in tracks.where((t) => !t.isBuiltInDemo)) {
+      try {
+        final tx = db.callMethod<JSObject>('transaction'.toJS, _storeName.toJS, 'readwrite'.toJS);
+        final store = tx.callMethod<JSObject>('objectStore'.toJS, _storeName.toJS);
+        final req = store.callMethod<JSObject>('get'.toJS, track.id.toJS);
+        req['onsuccess'] = ((JSAny? _) {
+          final existing = req['result'] as JSObject?;
+          if (existing != null) {
+            existing['playCount'] = track.playCount.toJS;
+            existing['isFavorite'] = track.isFavorite.toJS;
+            store.callMethod<JSAny?>('put'.toJS, existing);
+          }
+        }).toJS;
+      } catch (_) {}
+    }
+  }
+
+  /// Deletes an imported track from IndexedDB and revokes its Blob URL.
+  Future<void> deleteSavedTrack(Track track) async {
+    try {
+      if (track.filePath.startsWith('blob:')) {
+        final urlObj = globalContext['URL'] as JSObject;
+        urlObj.callMethod<JSAny?>('revokeObjectURL'.toJS, track.filePath.toJS);
+      }
+      final db = await _openDb();
+      if (db == null) return;
+      final tx = db.callMethod<JSObject>('transaction'.toJS, _storeName.toJS, 'readwrite'.toJS);
+      final store = tx.callMethod<JSObject>('objectStore'.toJS, _storeName.toJS);
+      store.callMethod<JSAny?>('delete'.toJS, track.id.toJS);
+    } catch (_) {}
   }
 
   Future<Uint8List?> loadWavBytesForFft(Track track) async => null;
@@ -272,13 +466,20 @@ class PlatformAudioBridge {
     return _pickBrowserFiles(directoryMode: false);
   }
 
+  /// Opens browser file/folder picker with proper cancel detection (`oncancel` + `window.onfocus`)
+  /// so cancelling the OS dialog NEVER leaves the UI stuck in loading state!
   Future<List<Track>> _pickBrowserFiles({required bool directoryMode}) async {
     final completer = Completer<List<Track>>();
+    bool fileSelected = false;
+    Timer? cancelFallbackTimer;
+
     try {
       final doc = globalContext['document'] as JSObject;
+      final win = globalContext['window'] as JSObject;
       final input = doc.callMethod<JSObject>('createElement'.toJS, 'input'.toJS);
       input['type'] = 'file'.toJS;
       input['multiple'] = true.toJS;
+      input['style'] = 'display:none'.toJS;
 
       if (directoryMode) {
         input['webkitdirectory'] = true.toJS;
@@ -287,12 +488,42 @@ class PlatformAudioBridge {
         input['accept'] = 'audio/*,video/mp4,.mp3,.mp4,.flac,.wav,.m4a,.aac,.ogg,.wma,.lrc'.toJS;
       }
 
+      void cleanup() {
+        cancelFallbackTimer?.cancel();
+        try {
+          input.callMethod<JSAny?>('remove'.toJS);
+        } catch (_) {}
+      }
+
       input['onchange'] = ((JSAny? _) {
+        fileSelected = true;
+        cleanup();
         unawaited(_handleSelectedFiles(input, completer));
       }).toJS;
 
+      input['oncancel'] = ((JSAny? _) {
+        cleanup();
+        if (!completer.isCompleted) completer.complete(const []);
+      }).toJS;
+
+      late JSFunction onFocusListener;
+      onFocusListener = ((JSAny? _) {
+        win.callMethod<JSAny?>('removeEventListener'.toJS, 'focus'.toJS, onFocusListener);
+        cancelFallbackTimer = Timer(const Duration(milliseconds: 500), () {
+          if (!fileSelected && !completer.isCompleted) {
+            cleanup();
+            completer.complete(const []);
+          }
+        });
+      }).toJS;
+
+      win.callMethod<JSAny?>('addEventListener'.toJS, 'focus'.toJS, onFocusListener);
+
+      final body = doc['body'] as JSObject?;
+      body?.callMethod<JSAny?>('appendChild'.toJS, input);
       input.callMethod<JSAny?>('click'.toJS);
     } catch (_) {
+      cancelFallbackTimer?.cancel();
       if (!completer.isCompleted) completer.complete(const []);
     }
     return completer.future;
@@ -302,7 +533,7 @@ class PlatformAudioBridge {
     try {
       final filesList = input['files'] as JSObject?;
       if (filesList == null) {
-        completer.complete(const []);
+        if (!completer.isCompleted) completer.complete(const []);
         return;
       }
       final length = (filesList['length'] as JSNumber).toDartInt;
@@ -323,6 +554,7 @@ class PlatformAudioBridge {
       final urlObj = globalContext['URL'] as JSObject;
       final parsedTracks = <Track>[];
       final maxTracks = math.min(audioFileObjects.length, 250);
+      final nowMs = DateTime.now().millisecondsSinceEpoch;
 
       for (int i = 0; i < maxTracks; i++) {
         final file = audioFileObjects[i];
@@ -340,18 +572,32 @@ class PlatformAudioBridge {
         final headerBytes = arrayBuf.toDart.asUint8List();
 
         List<LyricLine> companionLyrics = const [];
+        Uint8List? lrcRawBytes;
         final baseKey = p.basenameWithoutExtension(name).toLowerCase();
         final lrcFile = lrcFileMap[baseKey];
         if (lrcFile != null) {
           final lrcBufPromise = lrcFile.callMethod<JSPromise>('arrayBuffer'.toJS);
           final lrcBuf = (await lrcBufPromise.toDart) as JSArrayBuffer;
-          companionLyrics = LrcParser.parseBytes(lrcBuf.toDart.asUint8List());
+          lrcRawBytes = lrcBuf.toDart.asUint8List();
+          companionLyrics = LrcParser.parseBytes(lrcRawBytes);
         }
 
+        // Stable persistent ID for IndexedDB deduplication across sessions
+        final stableId = 'web_idb_${folderName}_${name}_$size';
         final blobUrl = urlObj.callMethod<JSString>('createObjectURL'.toJS, file).toDart;
 
+        await _putRecordToIndexedDb(
+          id: stableId,
+          fileName: name,
+          folderPath: folderName,
+          fileSize: size,
+          importedTimestampMs: nowMs + i,
+          audioBlob: file,
+          lrcBytes: lrcRawBytes,
+        );
+
         final track = AudioMetadataParser.parseBytes(
-          id: blobUrl,
+          id: stableId,
           filePath: blobUrl,
           fileName: name,
           folderPath: folderName,
@@ -359,11 +605,12 @@ class PlatformAudioBridge {
           headerBytes: headerBytes,
           companionLyrics: companionLyrics,
           indexSeed: i,
-        );
+        ).copyWith(importedTimestampMs: nowMs + i);
+
         parsedTracks.add(track);
       }
 
-      completer.complete(parsedTracks);
+      if (!completer.isCompleted) completer.complete(parsedTracks);
     } catch (_) {
       if (!completer.isCompleted) completer.complete(const []);
     }

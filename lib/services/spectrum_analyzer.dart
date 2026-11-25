@@ -3,14 +3,21 @@ import 'dart:typed_data';
 import '../models/track.dart';
 import 'demo_wav_generator.dart';
 
-/// Real-time Radix-2 Cooley-Tukey FFT & Multi-Band Melodic/Rhythmic Spectrum Analyzer.
-/// Captures fast transient melody notes, vocal peaks, and drum beats with high dynamic contrast.
+/// Real-time 512-point Radix-2 Cooley-Tukey FFT & 12-Tone Chromatic Pitch Analyzer.
+/// Maps audio frequencies onto the 12 fixed musical pitch classes (C, C#, D, D#, E, F, F#, G, G#, A, A#, B)
+/// and maintains delayed radial ripple trails so active melody notes & chords diffuse outward smoothly.
 class SpectrumAnalyzer {
-  static const int fftSize = 256;
+  static const int fftSize = 512;
   static const int binCount = 32;
+  static const int pitchCount = 12;
 
   final List<double> _smoothedBins = List<double>.filled(binCount, 0.03);
   final List<double> _prevBins = List<double>.filled(binCount, 0.03);
+
+  final List<double> _smoothedPitch = List<double>.filled(pitchCount, 0.02);
+  final List<double> _pitchTrail1 = List<double>.filled(pitchCount, 0.02);
+  final List<double> _pitchTrail2 = List<double>.filled(pitchCount, 0.02);
+
   double _smoothedBass = 0.04;
   double _smoothedMid = 0.04;
   double _smoothedTreble = 0.03;
@@ -61,14 +68,18 @@ class SpectrumAnalyzer {
     final double scale = intensity.clamp(0.15, 1.5);
 
     if (!isPlaying) {
-      _phase += 0.005;
-      _smoothedBass = _lerp(_smoothedBass, 0.03, 0.16);
-      _smoothedMid = _lerp(_smoothedMid, 0.03, 0.16);
-      _smoothedTreble = _lerp(_smoothedTreble, 0.02, 0.16);
-      _smoothedBeat = _lerp(_smoothedBeat, 0.0, 0.22);
+      _smoothedBass = _lerp(_smoothedBass, 0.03, 0.14);
+      _smoothedMid = _lerp(_smoothedMid, 0.03, 0.14);
+      _smoothedTreble = _lerp(_smoothedTreble, 0.02, 0.14);
+      _smoothedBeat = _lerp(_smoothedBeat, 0.0, 0.18);
       for (int i = 0; i < binCount; i++) {
-        _smoothedBins[i] = _lerp(_smoothedBins[i], 0.03, 0.16);
+        _smoothedBins[i] = _lerp(_smoothedBins[i], 0.03, 0.14);
         _prevBins[i] = _smoothedBins[i];
+      }
+      for (int p = 0; p < pitchCount; p++) {
+        _smoothedPitch[p] = _lerp(_smoothedPitch[p], 0.02, 0.16);
+        _pitchTrail1[p] = _lerp(_pitchTrail1[p], _smoothedPitch[p], 0.18);
+        _pitchTrail2[p] = _lerp(_pitchTrail2[p], _pitchTrail1[p], 0.14);
       }
       return SpectrumFrame(
         bassEnergy: _smoothedBass,
@@ -77,24 +88,28 @@ class SpectrumAnalyzer {
         beatPulse: _smoothedBeat,
         bins: List<double>.unmodifiable(_smoothedBins),
         phase: _phase,
+        pitchClasses: List<double>.unmodifiable(_smoothedPitch),
+        pitchTrail1: List<double>.unmodifiable(_pitchTrail1),
+        pitchTrail2: List<double>.unmodifiable(_pitchTrail2),
       );
     }
 
     final rawBins = List<double>.filled(binCount, 0.0);
+    final rawPitch = List<double>.filled(pitchCount, 0.0);
     final pcm = _activePcmBuffer;
 
     if (webAudioBins != null && webAudioBins.length == binCount) {
       for (int i = 0; i < binCount; i++) {
         rawBins[i] = webAudioBins[i];
       }
+      _derivePitchClassesFromBins(rawBins, rawPitch);
     } else if (pcm != null && pcm.length > 44 + fftSize * 4) {
-      _computeRealFftBins(pcm, position, rawBins);
+      _computeRealFftAndChroma(pcm, position, rawBins, rawPitch);
     } else {
-      _computeHarmonicBins(position, track, rawBins);
+      _computeMusicalChordAndMelody(position, track, rawBins, rawPitch);
     }
 
-    // Apply 5-band Equalizer gains + spectral flux transient enhancement
-    // (When a note suddenly appears in bin i, boost its attack so the melody leap is unmistakable!)
+    // Smooth 32-band EQ-modulated bins
     double spectralFlux = 0.0;
     for (int i = 0; i < binCount; i++) {
       final int eqIdx = ((i / binCount) * eqBands.length).floor().clamp(0, eqBands.length - 1);
@@ -106,48 +121,46 @@ class SpectrumAnalyzer {
       spectralFlux += onsetDelta;
       _prevBins[i] = rawVal;
 
-      final double target = (rawVal + onsetDelta * 0.85).clamp(0.02, 1.0);
-      // Fast attack (0.68) so melody notes jump immediately; snappy decay (0.24) so rests drop cleanly
-      final double alpha = target > _smoothedBins[i] ? 0.68 : 0.24;
+      final double target = (rawVal + onsetDelta * 0.65).clamp(0.02, 1.0);
+      final double alpha = target > _smoothedBins[i] ? 0.58 : 0.22;
       _smoothedBins[i] = _lerp(_smoothedBins[i], target, alpha);
     }
 
+    // Smooth 12 fixed pitch classes & propagate radial outward ripple trails
+    for (int p = 0; p < pitchCount; p++) {
+      final double targetP = (rawPitch[p] * scale).clamp(0.02, 1.0);
+      final double alphaP = targetP > _smoothedPitch[p] ? 0.55 : 0.16;
+      _smoothedPitch[p] = _lerp(_smoothedPitch[p], targetP, alphaP);
+      // Outer rings follow inner ring with smooth radial propagation lag (ripple diffusion)
+      _pitchTrail1[p] = _lerp(_pitchTrail1[p], _smoothedPitch[p], 0.24);
+      _pitchTrail2[p] = _lerp(_pitchTrail2[p], _pitchTrail1[p], 0.16);
+    }
+
     double bassSum = 0.0;
-    double bassPeak = 0.0;
     for (int i = 0; i < 6; i++) {
       bassSum += _smoothedBins[i];
-      if (_smoothedBins[i] > bassPeak) bassPeak = _smoothedBins[i];
     }
     double midSum = 0.0;
-    double midPeak = 0.0;
     for (int i = 6; i < 19; i++) {
       midSum += _smoothedBins[i];
-      if (_smoothedBins[i] > midPeak) midPeak = _smoothedBins[i];
     }
     double trebleSum = 0.0;
-    double treblePeak = 0.0;
     for (int i = 19; i < binCount; i++) {
       trebleSum += _smoothedBins[i];
-      if (_smoothedBins[i] > treblePeak) treblePeak = _smoothedBins[i];
     }
 
-    final double instBass = ((bassSum / 6.0) * 0.55 + bassPeak * 0.45).clamp(0.02, 1.0);
-    final double instMid = ((midSum / 13.0) * 0.45 + midPeak * 0.55).clamp(0.02, 1.0);
-    final double instTreble = ((trebleSum / 13.0) * 0.45 + treblePeak * 0.55).clamp(0.02, 1.0);
-
-    // Beat & melodic onset detector combining bass transient and full-spectrum note flux
+    final double instBass = (bassSum / 6.0).clamp(0.02, 1.0);
+    final double instMid = (midSum / 13.0).clamp(0.02, 1.0);
+    final double instTreble = (trebleSum / 13.0).clamp(0.02, 1.0);
     final double bassDelta = math.max(0.0, instBass - _smoothedBass * 0.86);
-    final double normFlux = (spectralFlux / 5.5).clamp(0.0, 1.0);
-    final double targetBeat =
-        (bassDelta * 3.2 + normFlux * 0.75 + math.pow(instBass, 2.0) * 0.55).clamp(0.0, 1.0);
+    final double normFlux = (spectralFlux / 6.0).clamp(0.0, 1.0);
+    final double targetBeat = (bassDelta * 2.5 + normFlux * 0.6).clamp(0.0, 1.0);
 
-    _smoothedBass = _lerp(_smoothedBass, instBass, instBass > _smoothedBass ? 0.62 : 0.25);
-    _smoothedMid = _lerp(_smoothedMid, instMid, instMid > _smoothedMid ? 0.65 : 0.26);
-    _smoothedTreble = _lerp(_smoothedTreble, instTreble, instTreble > _smoothedTreble ? 0.65 : 0.28);
-    _smoothedBeat = _lerp(_smoothedBeat, targetBeat, targetBeat > _smoothedBeat ? 0.72 : 0.24);
-
-    // Phase advances gently during quiet passages and surges on rhythmic beats & melodic peaks
-    _phase += 0.010 + (_smoothedBeat * 0.055) + (_smoothedMid * 0.032);
+    _smoothedBass = _lerp(_smoothedBass, instBass, 0.45);
+    _smoothedMid = _lerp(_smoothedMid, instMid, 0.45);
+    _smoothedTreble = _lerp(_smoothedTreble, instTreble, 0.45);
+    _smoothedBeat = _lerp(_smoothedBeat, targetBeat, 0.45);
+    _phase += 0.02 + (_smoothedMid * 0.025);
 
     return SpectrumFrame(
       bassEnergy: _smoothedBass,
@@ -156,11 +169,20 @@ class SpectrumAnalyzer {
       beatPulse: _smoothedBeat,
       bins: List<double>.unmodifiable(_smoothedBins),
       phase: _phase,
+      pitchClasses: List<double>.unmodifiable(_smoothedPitch),
+      pitchTrail1: List<double>.unmodifiable(_pitchTrail1),
+      pitchTrail2: List<double>.unmodifiable(_pitchTrail2),
     );
   }
 
-  /// Computes real-time 256-point Radix-2 FFT + waveform RMS envelope from PCM WAV bytes.
-  void _computeRealFftBins(Uint8List wavBytes, Duration position, List<double> outBins) {
+  /// Computes 512-point FFT and maps each frequency bin `f = k * sampleRate / N`
+  /// directly to its exact 12-tone pitch class (`C=0 .. B=11`).
+  void _computeRealFftAndChroma(
+    Uint8List wavBytes,
+    Duration position,
+    List<double> outBins,
+    List<double> outPitch,
+  ) {
     final int frameBytes = _activeBytesPerSample * _activeChannels;
     final int payloadBytes = wavBytes.length - 44;
     if (payloadBytes <= fftSize * frameBytes) return;
@@ -190,25 +212,124 @@ class SpectrumAnalyzer {
     }
 
     final double rms = math.sqrt(rmsSum / fftSize).clamp(0.0, 1.0);
-    // Gate out quiet floor and amplify dynamic peaks
-    final double rmsEnvelope = math.pow((rms * 2.6).clamp(0.0, 1.0), 1.35).toDouble();
+    final double rmsEnvelope = math.pow((rms * 2.5).clamp(0.0, 1.0), 1.2).toDouble();
 
     _inPlaceRadix2Fft(real, imag);
 
+    final int halfN = fftSize ~/ 2;
+    // 1. Fill 32 logarithmic display bins
     for (int b = 0; b < binCount; b++) {
-      final int startBin = (math.pow(b / binCount, 1.55) * 88).floor().clamp(1, 115);
-      final int endBin =
-          math.max(startBin + 1, (math.pow((b + 1) / binCount, 1.55) * 88).floor().clamp(2, 124));
+      final int startBin = (math.pow(b / binCount, 1.6) * (halfN * 0.8)).floor().clamp(1, halfN - 2);
+      final int endBin = math.max(
+        startBin + 1,
+        (math.pow((b + 1) / binCount, 1.6) * (halfN * 0.8)).floor().clamp(2, halfN - 1),
+      );
       double peakMag = 0.0;
       for (int k = startBin; k < endBin; k++) {
         final mag = math.sqrt(real[k] * real[k] + imag[k] * imag[k]);
         if (mag > peakMag) peakMag = mag;
       }
-      // Frequency-dependent perceptual weight + sharp contrast curve
-      final double weight = 0.14 + (b / binCount) * 0.42;
+      final double weight = 0.08 + (b / binCount) * 0.25;
       final double norm = (peakMag * weight).clamp(0.0, 1.0);
-      final double contrasted = math.pow(norm, 1.45).toDouble() * (0.35 + rmsEnvelope * 0.95);
-      outBins[b] = contrasted.clamp(0.02, 1.0);
+      outBins[b] = (math.pow(norm, 1.35).toDouble() * (0.3 + rmsEnvelope * 0.9)).clamp(0.02, 1.0);
+    }
+
+    // 2. Accumulate musical frequencies (65Hz .. 2400Hz) into exact 12 chromatic pitch classes
+    final double binHz = _activeSampleRate / fftSize;
+    double maxChroma = 0.001;
+    for (int k = 1; k < halfN; k++) {
+      final double freq = k * binHz;
+      if (freq < 65.0 || freq > 2400.0) continue;
+      final double mag = math.sqrt(real[k] * real[k] + imag[k] * imag[k]);
+      final double midiFloat = 69.0 + 12.0 * (math.log(freq / 440.0) / math.ln2);
+      final int pitchClass = (midiFloat.round() % 12 + 12) % 12;
+      outPitch[pitchClass] += mag * mag;
+      if (outPitch[pitchClass] > maxChroma) {
+        maxChroma = outPitch[pitchClass];
+      }
+    }
+
+    for (int p = 0; p < pitchCount; p++) {
+      // Relative dominance within the active chord/melody + overall loudness gate
+      final double rel = (outPitch[p] / maxChroma).clamp(0.0, 1.0);
+      outPitch[p] = (math.pow(rel, 0.75).toDouble() * (0.2 + rmsEnvelope * 0.95)).clamp(0.02, 1.0);
+    }
+  }
+
+  /// Derives 12 chromatic pitch classes from Web Audio 32-band logarithmic bins.
+  void _derivePitchClassesFromBins(List<double> bins, List<double> outPitch) {
+    // 32 logarithmic bins span ~45Hz to ~10kHz (~96 semitones / ~3 semitones per bin)
+    double maxVal = 0.001;
+    for (int i = 0; i < bins.length; i++) {
+      final double approxFreq = 45.0 * math.pow(2.0, (i / bins.length) * 7.8);
+      final double midiFloat = 69.0 + 12.0 * (math.log(approxFreq / 440.0) / math.ln2);
+      final int pc = (midiFloat.round() % 12 + 12) % 12;
+      final int pcNext = (pc + 1) % 12;
+      outPitch[pc] += bins[i];
+      outPitch[pcNext] += bins[i] * 0.35;
+      if (outPitch[pc] > maxVal) maxVal = outPitch[pc];
+    }
+    for (int p = 0; p < pitchCount; p++) {
+      outPitch[p] = math.pow((outPitch[p] / maxVal).clamp(0.0, 1.0), 1.3).toDouble().clamp(0.02, 1.0);
+    }
+  }
+
+  /// Generates realistic musical chord progressions & melody notes into the 12 fixed pitch classes
+  /// when playing native compressed formats (MP3/MP4/FLAC) without raw PCM access.
+  void _computeMusicalChordAndMelody(
+    Duration position,
+    Track track,
+    List<double> outBins,
+    List<double> outPitch,
+  ) {
+    final double t = position.inMilliseconds / 1000.0;
+    final int seed = track.title.hashCode.abs();
+    final double bpm = 112.0 + (seed % 24);
+    final double beatSec = 60.0 / bpm;
+    final double eighthSec = beatSec / 2.0;
+
+    // 4-bar chord progression in pitch classes (0=C, 2=D, 4=E, 5=F, 7=G, 9=A, 11=B)
+    final int keyOffset = seed % 12;
+    const progressions = <List<List<int>>>[
+      // Am7 -> Fmaj7 -> Cmaj7 -> G6
+      [
+        [9, 0, 4, 7],
+        [5, 9, 0, 4],
+        [0, 4, 7, 11],
+        [7, 11, 2, 4],
+      ],
+      // Dm7 -> G7 -> Cmaj9 -> Am7
+      [
+        [2, 5, 9, 0],
+        [7, 11, 2, 5],
+        [0, 4, 7, 2],
+        [9, 0, 4, 7],
+      ],
+    ];
+    final prog = progressions[seed % progressions.length];
+    final int barIdx = ((t / (beatSec * 4.0)).floor()) % prog.length;
+    final List<int> chordNotes = prog[barIdx];
+
+    final double barPhase = (t % (beatSec * 4.0)) / (beatSec * 4.0);
+    final double chordSwell = 0.45 + 0.40 * math.sin(barPhase * math.pi);
+
+    // Activate all notes of the current chord at their fixed angles
+    for (int i = 0; i < chordNotes.length; i++) {
+      final int pc = (chordNotes[i] + keyOffset) % 12;
+      outPitch[pc] = (chordSwell * (i == 0 ? 1.0 : 0.78)).clamp(0.05, 0.95);
+    }
+
+    // Highlight the active lead melody note jumping along the chord/scale
+    final int eighthStep = (t / eighthSec).floor();
+    final double stepPhase = (t % eighthSec) / eighthSec;
+    final int melodyNote = (chordNotes[(eighthStep * 3) % chordNotes.length] + keyOffset) % 12;
+    final double noteEnv = math.exp(-stepPhase * 2.8);
+    outPitch[melodyNote] = math.max(outPitch[melodyNote], 0.35 + noteEnv * 0.65).clamp(0.05, 1.0);
+
+    // Fill 32-band spectrum coherently
+    for (int i = 0; i < binCount; i++) {
+      final int pc = (i * 3) % 12;
+      outBins[i] = (outPitch[pc] * 0.85 + noteEnv * 0.15).clamp(0.03, 0.95);
     }
   }
 
@@ -254,48 +375,6 @@ class SpectrumAnalyzer {
           wR = nextWR;
         }
       }
-    }
-  }
-
-  /// Dynamic rhythmic & melodic note envelope synthesizer for native compressed streams
-  /// when raw PCM buffer is decoded by OS hardware.
-  void _computeHarmonicBins(Duration position, Track track, List<double> outBins) {
-    final double t = position.inMilliseconds / 1000.0;
-    final int seed = track.title.hashCode.abs();
-    final double bpm = 114.0 + (seed % 28);
-    final double beatSec = 60.0 / bpm;
-    final double sixteenthSec = beatSec / 4.0;
-
-    final int step16 = ((t / sixteenthSec).floor()) % 16;
-    final double stepPhase = (t % sixteenthSec) / sixteenthSec;
-    final double beatPhase = (t % beatSec) / beatSec;
-
-    // Kick & Snare rhythmic envelopes
-    final double kickHit = (step16 % 4 == 0 || step16 == 11) ? math.exp(-beatPhase * 9.5) : 0.05;
-    final double snareHit = (step16 % 8 == 4) ? math.exp(-beatPhase * 13.0) : 0.04;
-
-    // Melodic note contour (active on rhythmic steps, resting on off-steps)
-    const List<int> gate = [1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 0, 1, 1, 1, 0, 0];
-    final bool hasNote = gate[step16] == 1;
-    final int activeMelodyBin = 7 + ((step16 * 3 + seed) % 14);
-    final double noteEnv = hasNote ? math.exp(-stepPhase * 3.4) : 0.06;
-
-    for (int i = 0; i < binCount; i++) {
-      double val = 0.03;
-      if (i < 6) {
-        // Sub-bass & kick drums
-        val = kickHit * (0.95 - i * 0.08);
-      } else if (i < 21) {
-        // Melody & vocal bands: peak sharply around the currently playing note pitch!
-        final double dist = (i - activeMelodyBin).abs().toDouble();
-        final double pitchBell = math.exp(-(dist * dist) / 4.5);
-        val = noteEnv * pitchBell * 0.92 + snareHit * 0.35;
-      } else {
-        // High-frequency hi-hats & harmonic shimmer
-        final double hihat = (step16.isEven ? math.exp(-stepPhase * 12.0) : 0.12);
-        val = hihat * 0.55 + noteEnv * 0.28;
-      }
-      outBins[i] = val.clamp(0.02, 0.98);
     }
   }
 

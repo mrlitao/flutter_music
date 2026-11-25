@@ -31,6 +31,7 @@ class AudioEngineController extends ChangeNotifier {
   Duration _position = Duration.zero;
   Duration _duration = const Duration(seconds: 24);
   double _volume = 0.82;
+  double _lastNonZeroVolume = 0.82;
   double _playbackSpeed = 1.0;
   double _waveIntensity = 0.78;
   PlayMode _playMode = PlayMode.sequence;
@@ -195,8 +196,31 @@ class AudioEngineController extends ChangeNotifier {
       _syncNativePosition();
     });
 
-    if (!kIsWeb) {
-      unawaited(scanDefaultSystemMusicFolders());
+    if (kIsWeb) {
+      unawaited(_restoreSavedTracks());
+    } else {
+      unawaited(_restoreAndScanNative());
+    }
+  }
+
+  Future<void> _restoreSavedTracks() async {
+    try {
+      final restored = await _bridge.loadSavedImportedTracks();
+      if (_isDisposed) return;
+      if (restored.isNotEmpty) {
+        final added = _mergeTracks(restored, persist: false);
+        if (added > 0) {
+          _statusMessage = '已自动恢复上次导入的 $added 首本地音乐';
+          notifyListeners();
+        }
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _restoreAndScanNative() async {
+    await _restoreSavedTracks();
+    if (!_isDisposed) {
+      await scanDefaultSystemMusicFolders();
     }
   }
 
@@ -281,15 +305,17 @@ class AudioEngineController extends ChangeNotifier {
     try {
       final found = await _bridge.scanDefaultDirectories();
       addedCount = _mergeTracks(found);
-    } catch (_) {}
-
-    _isScanning = false;
-    if (addedCount > 0) {
-      _statusMessage = '已自动导入 $addedCount 首本机音乐（共 ${_tracks.length} 首）';
-    } else {
-      _statusMessage = '内置 4 首高保真声学演示曲目 · 点击「选择文件夹扫描」或「选择音频文件导入」加载本机音乐';
+      if (addedCount > 0) {
+        _statusMessage = '已自动导入 $addedCount 首本机音乐（共 ${_tracks.length} 首）';
+      } else {
+        _statusMessage = '内置 4 首高保真声学演示曲目 · 点击「选择文件夹扫描」或「选择音频文件导入」加载本机音乐';
+      }
+    } catch (_) {
+      _statusMessage = '扫描默认音乐目录失败，请尝试手动选择文件夹';
+    } finally {
+      _isScanning = false;
+      notifyListeners();
     }
-    notifyListeners();
   }
 
   Future<int> pickAndScanFolder() async {
@@ -367,7 +393,7 @@ class AudioEngineController extends ChangeNotifier {
     return added;
   }
 
-  int _mergeTracks(List<Track> incoming) {
+  int _mergeTracks(List<Track> incoming, {bool persist = true}) {
     final existingIds = _tracks.map((t) => t.id).toSet();
     int added = 0;
     final newTracks = <Track>[];
@@ -381,8 +407,41 @@ class AudioEngineController extends ChangeNotifier {
     if (newTracks.isNotEmpty) {
       _tracks = [...newTracks, ..._tracks];
       _currentIndex = 0;
+      if (persist) {
+        unawaited(_bridge.saveImportedTracks(_tracks));
+      }
     }
     return added;
+  }
+
+  /// Deletes an imported track from the library and persistent storage (IndexedDB / JSON cache).
+  Future<void> deleteTrack(String trackId) async {
+    final idx = _tracks.indexWhere((t) => t.id == trackId);
+    if (idx < 0) return;
+
+    final target = _tracks[idx];
+    final bool wasPlayingTarget = currentTrack.id == target.id;
+    if (wasPlayingTarget) {
+      await _bridge.stop();
+      _isPlaying = false;
+      _position = Duration.zero;
+      positionNotifier.value = Duration.zero;
+    }
+
+    _tracks.removeAt(idx);
+    if (_tracks.isEmpty) {
+      _tracks = DemoWavGenerator.buildShowcaseTracks();
+      _currentIndex = 0;
+    } else if (_currentIndex >= _tracks.length) {
+      _currentIndex = _tracks.length - 1;
+    } else if (idx < _currentIndex) {
+      _currentIndex = (_currentIndex - 1).clamp(0, _tracks.length - 1);
+    }
+
+    await _bridge.deleteSavedTrack(target);
+    unawaited(_bridge.saveImportedTracks(_tracks));
+    _statusMessage = '已删除: ${target.title}';
+    notifyListeners();
   }
 
   Future<void> selectTrack(Track track, {bool autoPlay = true}) async {
@@ -491,8 +550,20 @@ class AudioEngineController extends ChangeNotifier {
 
   Future<void> setVolume(double newVolume) async {
     _volume = newVolume.clamp(0.0, 1.0);
+    if (_volume > 0.01) {
+      _lastNonZeroVolume = _volume;
+    }
     await _bridge.setVolume(_volume);
     notifyListeners();
+  }
+
+  Future<void> toggleMute() async {
+    if (_volume > 0.01) {
+      _lastNonZeroVolume = _volume;
+      await setVolume(0.0);
+    } else {
+      await setVolume(_lastNonZeroVolume > 0.01 ? _lastNonZeroVolume : 0.82);
+    }
   }
 
   void setPlaybackSpeed(double speed) {
@@ -528,6 +599,7 @@ class AudioEngineController extends ChangeNotifier {
     if (idx >= 0) {
       final current = _tracks[idx];
       _tracks[idx] = current.copyWith(isFavorite: !current.isFavorite);
+      unawaited(_bridge.saveImportedTracks(_tracks));
       notifyListeners();
     }
   }

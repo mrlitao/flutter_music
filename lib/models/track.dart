@@ -125,16 +125,23 @@ class SpectrumFrame {
     required this.beatPulse,
     required this.bins,
     required this.phase,
+    required this.pitchClasses,
+    required this.pitchTrail1,
+    required this.pitchTrail2,
   });
 
   factory SpectrumFrame.idle([double phase = 0.0]) {
+    final idlePitch = List<double>.filled(12, 0.02);
     return SpectrumFrame(
-      bassEnergy: 0.06,
-      midEnergy: 0.05,
-      trebleEnergy: 0.04,
+      bassEnergy: 0.04,
+      midEnergy: 0.04,
+      trebleEnergy: 0.03,
       beatPulse: 0.0,
-      bins: List<double>.filled(32, 0.05),
+      bins: List<double>.filled(32, 0.03),
       phase: phase,
+      pitchClasses: idlePitch,
+      pitchTrail1: idlePitch,
+      pitchTrail2: idlePitch,
     );
   }
 
@@ -144,6 +151,13 @@ class SpectrumFrame {
   final double beatPulse;
   final List<double> bins;
   final double phase;
+
+  /// 12 chromatic pitch classes (C, C#, D, D#, E, F, F#, G, G#, A, A#, B) mapped to fixed angles.
+  final List<double> pitchClasses;
+
+  /// Delayed pitch-class energy (~80ms & ~160ms) for radial outward streamline ripple diffusion.
+  final List<double> pitchTrail1;
+  final List<double> pitchTrail2;
 }
 
 /// Represents a local or synthesized music track in the library.

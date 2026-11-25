@@ -53,10 +53,11 @@ class _SynchronizedLyricsPanelState extends State<SynchronizedLyricsPanel> {
     if (widget.lyrics.isEmpty) {
       return Center(
         child: Text(
-          '暂无同步歌词 · 支持同目录同名 .lrc 自动加载',
+          '暂无歌词',
           style: TextStyle(
             color: widget.isLightMode ? Colors.black54 : Colors.white54,
-            fontSize: 13,
+            fontSize: 13.5,
+            fontWeight: FontWeight.w500,
           ),
         ),
       );

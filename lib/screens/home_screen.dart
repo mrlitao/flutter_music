@@ -857,6 +857,48 @@ class _AuraMusicHomeScreenState extends State<AuraMusicHomeScreen>
             ),
           ],
         ),
+        // Mobile Volume Control Row (Mute/Unmute + Slider)
+        Row(
+          children: [
+            IconButton(
+              tooltip: ctrl.volume <= 0.01 ? '取消静音' : '静音',
+              visualDensity: VisualDensity.compact,
+              constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+              padding: EdgeInsets.zero,
+              onPressed: ctrl.toggleMute,
+              icon: Icon(
+                ctrl.volume <= 0.01 ? Icons.volume_off_rounded : Icons.volume_up_rounded,
+                size: 18,
+                color: ctrl.volume <= 0.01 ? Colors.pinkAccent : subColor,
+              ),
+            ),
+            Expanded(
+              child: SliderTheme(
+                data: SliderTheme.of(context).copyWith(
+                  trackHeight: 2.5,
+                  thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 4.5),
+                  overlayShape: const RoundSliderOverlayShape(overlayRadius: 9),
+                ),
+                child: Slider(
+                  value: ctrl.volume,
+                  activeColor: accent,
+                  inactiveColor: isLight
+                      ? Colors.black.withValues(alpha: 0.12)
+                      : Colors.white.withValues(alpha: 0.16),
+                  onChanged: ctrl.setVolume,
+                ),
+              ),
+            ),
+            SizedBox(
+              width: 34,
+              child: Text(
+                '${(ctrl.volume * 100).round()}%',
+                textAlign: TextAlign.right,
+                style: TextStyle(fontSize: 10.5, fontFamily: 'monospace', color: subColor),
+              ),
+            ),
+          ],
+        ),
       ],
     );
   }
@@ -947,15 +989,12 @@ class _AuraMusicHomeScreenState extends State<AuraMusicHomeScreen>
               child: ValueListenableBuilder<SpectrumFrame>(
                 valueListenable: ctrl.spectrumNotifier,
                 builder: (context, liveSpectrum, _) {
-                  final double bassPulse = ctrl.isPlaying ? liveSpectrum.beatPulse * 0.08 : 0.0;
                   final posMs = ctrl.positionNotifier.value.inMilliseconds.clamp(0, totalMs);
                   final progress = (posMs / totalMs).clamp(0.0, 1.0);
-                  return Transform.scale(
+                  return Container(
                     key: _circularPlayerBtnKey,
-                    scale: 1.0 + bassPulse,
-                    child: Container(
-                      width: 64,
-                      height: 64,
+                    width: 64,
+                    height: 64,
                       decoration: BoxDecoration(
                         shape: BoxShape.circle,
                         gradient: LinearGradient(
@@ -1024,8 +1063,7 @@ class _AuraMusicHomeScreenState extends State<AuraMusicHomeScreen>
                           ),
                         ],
                       ),
-                    ),
-                  );
+                    );
                 },
               ),
             ),
@@ -1084,6 +1122,10 @@ class _AuraMusicHomeScreenState extends State<AuraMusicHomeScreen>
     final textColor = isLight ? const Color(0xFF0F172A) : Colors.white;
     final subColor = isLight ? Colors.black54 : Colors.white60;
     final accent = ctrl.activeAuroraColors.first;
+    final bool isMediumDesktop = constraints.maxWidth <= 930;
+    final double sidebarWidth = isMediumDesktop ? 186.0 : 215.0;
+    final double libraryWidth =
+        isMediumDesktop ? 252.0 : (constraints.maxWidth * 0.29).clamp(280.0, 360.0);
 
     return Padding(
       padding: const EdgeInsets.all(14.0),
@@ -1094,10 +1136,10 @@ class _AuraMusicHomeScreenState extends State<AuraMusicHomeScreen>
               children: [
                 // 1. Left Frosted Sidebar
                 AuraGlassContainer(
-                  width: 215,
+                  width: sidebarWidth,
                   borderRadius: 22,
                   isLightMode: isLight,
-                  padding: const EdgeInsets.all(16),
+                  padding: EdgeInsets.all(isMediumDesktop ? 12 : 16),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
@@ -1132,8 +1174,8 @@ class _AuraMusicHomeScreenState extends State<AuraMusicHomeScreen>
                                   ),
                                 ),
                                 Text(
-                                  'Win · iOS · Android · 鸿蒙',
-                                  style: TextStyle(fontSize: 10, color: subColor),
+                                  '本地音乐播放器',
+                                  style: TextStyle(fontSize: 10.5, color: subColor),
                                 ),
                               ],
                             ),
@@ -1250,7 +1292,7 @@ class _AuraMusicHomeScreenState extends State<AuraMusicHomeScreen>
 
                 // 2. Center Library List / Grid Panel
                 SizedBox(
-                  width: (constraints.maxWidth * 0.31).clamp(280.0, 380.0),
+                  width: libraryWidth,
                   child: AuraGlassContainer(
                     borderRadius: 22,
                     isLightMode: isLight,
@@ -1261,80 +1303,93 @@ class _AuraMusicHomeScreenState extends State<AuraMusicHomeScreen>
 
                 const SizedBox(width: 12),
 
-                // 3. Right Immersive Fluid Streamline Wave Ripple & Lyrics Stage
+                // 3. Right Immersive Fluid Streamline Wave Ripple & Lyrics Stage (Vertical 上下布局)
                 Expanded(
                   child: AuraGlassContainer(
                     borderRadius: 22,
                     isLightMode: isLight,
-                    padding: const EdgeInsets.fromLTRB(20, 16, 20, 14),
+                    padding: EdgeInsets.fromLTRB(
+                      isMediumDesktop ? 14 : 20,
+                      14,
+                      isMediumDesktop ? 14 : 20,
+                      12,
+                    ),
                     child: Column(
                       children: [
                         Row(
                           mainAxisAlignment: MainAxisAlignment.spaceBetween,
                           children: [
-                            Row(
-                              children: [
-                                Container(
-                                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                                  decoration: BoxDecoration(
-                                    borderRadius: BorderRadius.circular(20),
-                                    color: accent.withValues(alpha: 0.16),
-                                    border: Border.all(color: accent.withValues(alpha: 0.45)),
-                                  ),
-                                  child: Text(
-                                    'HI-RES AUDIO · ${ctrl.currentTrack.formatBadge}',
-                                    style: TextStyle(
-                                      fontSize: 11,
-                                      fontWeight: FontWeight.w700,
-                                      color: accent,
+                            Flexible(
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Flexible(
+                                    child: Container(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 10,
+                                        vertical: 4,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        borderRadius: BorderRadius.circular(20),
+                                        color: accent.withValues(alpha: 0.16),
+                                        border: Border.all(color: accent.withValues(alpha: 0.45)),
+                                      ),
+                                      child: Text(
+                                        'HI-RES AUDIO · ${ctrl.currentTrack.formatBadge}',
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: TextStyle(
+                                          fontSize: 11,
+                                          fontWeight: FontWeight.w700,
+                                          color: accent,
+                                        ),
+                                      ),
                                     ),
                                   ),
-                                ),
-                                if (ctrl.sleepRemaining != null) ...[
-                                  const SizedBox(width: 8),
-                                  Container(
-                                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                                    decoration: BoxDecoration(
-                                      borderRadius: BorderRadius.circular(20),
-                                      color: Colors.amber.withValues(alpha: 0.2),
+                                  if (ctrl.sleepRemaining != null) ...[
+                                    const SizedBox(width: 8),
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 8,
+                                        vertical: 4,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        borderRadius: BorderRadius.circular(20),
+                                        color: Colors.amber.withValues(alpha: 0.2),
+                                      ),
+                                      child: Text(
+                                        '🌙 ${ctrl.sleepRemaining!.inMinutes}:${(ctrl.sleepRemaining!.inSeconds % 60).toString().padLeft(2, "0")}',
+                                        style: const TextStyle(fontSize: 11, color: Colors.amber),
+                                      ),
                                     ),
-                                    child: Text(
-                                      '🌙 ${ctrl.sleepRemaining!.inMinutes}:${(ctrl.sleepRemaining!.inSeconds % 60).toString().padLeft(2, "0")}',
-                                      style: const TextStyle(fontSize: 11, color: Colors.amber),
-                                    ),
-                                  ),
+                                  ],
                                 ],
-                              ],
+                              ),
                             ),
-                            Row(
-                              children: [
-                                IconButton(
-                                  tooltip: '切换深色极光 / 浅色磨砂玻璃',
-                                  onPressed: ctrl.toggleGlassBrightnessMode,
-                                  icon: Icon(
-                                    isLight ? Icons.dark_mode_rounded : Icons.light_mode_rounded,
-                                    size: 19,
-                                    color: subColor,
-                                  ),
-                                ),
-                                IconButton(
-                                  tooltip: '均衡器与流线波纹设置',
-                                  onPressed: _openEqAndWaveSheet,
-                                  icon: Icon(Icons.tune_rounded, size: 19, color: subColor),
-                                ),
-                              ],
+                            IconButton(
+                              tooltip: '切换深色极光 / 浅色磨砂玻璃',
+                              onPressed: ctrl.toggleGlassBrightnessMode,
+                              icon: Icon(
+                                isLight ? Icons.dark_mode_rounded : Icons.light_mode_rounded,
+                                size: 19,
+                                color: subColor,
+                              ),
                             ),
                           ],
                         ),
 
+                        // Vertical 上下布局: Top = FluidWaveRippleVisualizer, Bottom = Title + Lyrics
                         Expanded(
                           child: LayoutBuilder(
                             builder: (context, stageBox) {
-                              final visSize = (stageBox.maxHeight * 0.86)
-                                  .clamp(210.0, 320.0)
-                                  .clamp(180.0, stageBox.maxWidth * 0.54);
-                              return Row(
+                              final double maxVisHeight = stageBox.maxHeight * 0.50;
+                              final double maxVisWidth = stageBox.maxWidth * 0.88;
+                              final double visSize = math
+                                  .min(maxVisHeight, maxVisWidth)
+                                  .clamp(140.0, 290.0);
+                              return Column(
                                 children: [
+                                  const SizedBox(height: 4),
                                   Center(
                                     child: ValueListenableBuilder<SpectrumFrame>(
                                       valueListenable: ctrl.spectrumNotifier,
@@ -1350,40 +1405,34 @@ class _AuraMusicHomeScreenState extends State<AuraMusicHomeScreen>
                                       },
                                     ),
                                   ),
-                                  const SizedBox(width: 16),
+                                  const SizedBox(height: 8),
+                                  Text(
+                                    ctrl.currentTrack.title,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    textAlign: TextAlign.center,
+                                    style: TextStyle(
+                                      fontSize: isMediumDesktop ? 17 : 20,
+                                      fontWeight: FontWeight.w800,
+                                      color: textColor,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 2),
+                                  Text(
+                                    '${ctrl.currentTrack.artist} · ${ctrl.currentTrack.album}',
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    textAlign: TextAlign.center,
+                                    style: TextStyle(fontSize: 12.5, color: subColor),
+                                  ),
+                                  const SizedBox(height: 6),
                                   Expanded(
-                                    child: Column(
-                                      crossAxisAlignment: CrossAxisAlignment.start,
-                                      children: [
-                                        const SizedBox(height: 8),
-                                        Text(
-                                          ctrl.currentTrack.title,
-                                          maxLines: 1,
-                                          overflow: TextOverflow.ellipsis,
-                                          style: TextStyle(
-                                            fontSize: 21,
-                                            fontWeight: FontWeight.w800,
-                                            color: textColor,
-                                          ),
-                                        ),
-                                        const SizedBox(height: 4),
-                                        Text(
-                                          '${ctrl.currentTrack.artist} · ${ctrl.currentTrack.album}',
-                                          maxLines: 1,
-                                          overflow: TextOverflow.ellipsis,
-                                          style: TextStyle(fontSize: 13, color: subColor),
-                                        ),
-                                        const SizedBox(height: 10),
-                                        Expanded(
-                                          child: SynchronizedLyricsPanel(
-                                            lyrics: ctrl.currentTrack.lyrics,
-                                            activeIndex: ctrl.activeLyricIndex,
-                                            accentColor: accent,
-                                            isLightMode: isLight,
-                                            onTapLine: ctrl.seekTo,
-                                          ),
-                                        ),
-                                      ],
+                                    child: SynchronizedLyricsPanel(
+                                      lyrics: ctrl.currentTrack.lyrics,
+                                      activeIndex: ctrl.activeLyricIndex,
+                                      accentColor: accent,
+                                      isLightMode: isLight,
+                                      onTapLine: ctrl.seekTo,
                                     ),
                                   ),
                                 ],
@@ -1698,6 +1747,8 @@ class _AuraMusicHomeScreenState extends State<AuraMusicHomeScreen>
                 ),
                 IconButton(
                   visualDensity: VisualDensity.compact,
+                  constraints: const BoxConstraints(minWidth: 30, minHeight: 30),
+                  padding: EdgeInsets.zero,
                   onPressed: () => ctrl.toggleFavorite(track.id),
                   icon: Icon(
                     track.isFavorite ? Icons.favorite_rounded : Icons.favorite_border_rounded,
@@ -1705,6 +1756,20 @@ class _AuraMusicHomeScreenState extends State<AuraMusicHomeScreen>
                     color: track.isFavorite ? Colors.pinkAccent : subColor,
                   ),
                 ),
+                if (!track.isBuiltInDemo)
+                  IconButton(
+                    tooltip: '删除导入歌曲',
+                    visualDensity: VisualDensity.compact,
+                    constraints: const BoxConstraints(minWidth: 30, minHeight: 30),
+                    padding: EdgeInsets.zero,
+                    onPressed: () => ctrl.deleteTrack(track.id),
+                    icon: Icon(
+                      Icons.delete_outline_rounded,
+                      size: 17,
+                      color: subColor.withValues(alpha: 0.78),
+                    ),
+                  ),
+                const SizedBox(width: 4),
                 Text(
                   track.formattedDuration,
                   style: TextStyle(
@@ -1889,15 +1954,20 @@ class _AuraMusicHomeScreenState extends State<AuraMusicHomeScreen>
                   child: Row(
                     mainAxisAlignment: MainAxisAlignment.end,
                     children: [
-                      Icon(
-                        ctrl.volume <= 0.01
-                            ? Icons.volume_off_rounded
-                            : Icons.volume_up_rounded,
-                        size: 18,
-                        color: subColor,
+                      IconButton(
+                        tooltip: ctrl.volume <= 0.01 ? '取消静音' : '静音',
+                        visualDensity: VisualDensity.compact,
+                        onPressed: ctrl.toggleMute,
+                        icon: Icon(
+                          ctrl.volume <= 0.01
+                              ? Icons.volume_off_rounded
+                              : Icons.volume_up_rounded,
+                          size: 19,
+                          color: ctrl.volume <= 0.01 ? Colors.pinkAccent : subColor,
+                        ),
                       ),
                       SizedBox(
-                        width: 100,
+                        width: 110,
                         child: SliderTheme(
                           data: SliderTheme.of(context).copyWith(
                             trackHeight: 3,
@@ -1909,11 +1979,6 @@ class _AuraMusicHomeScreenState extends State<AuraMusicHomeScreen>
                             onChanged: ctrl.setVolume,
                           ),
                         ),
-                      ),
-                      IconButton(
-                        tooltip: '导入本地音乐文件',
-                        onPressed: _openImportSheet,
-                        icon: Icon(Icons.library_add_rounded, size: 19, color: subColor),
                       ),
                     ],
                   ),

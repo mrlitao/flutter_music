@@ -70,6 +70,7 @@ void main() {
     expect(track.duration, const Duration(seconds: 185));
     expect(track.formattedDuration, '03:05');
     expect(track.formatBadge, contains('MP4'));
+    expect(track.lyrics, isEmpty);
 
     // Also test scanning a real temporary directory containing an .mp4 file
     final tempDir = await Directory.systemTemp.createTemp('auramusic_mp4_test_');
@@ -88,6 +89,18 @@ void main() {
     final addedCount = await controller.scanCustomDirectory(tempDir.path);
     expect(addedCount, 1);
     expect(controller.allTracks.any((t) => t.title == 'Aurora Live'), isTrue);
+
+    // Test deleteTrack removes imported song
+    final importedTrack = controller.allTracks.firstWhere((t) => t.title == 'Aurora Live');
+    await controller.deleteTrack(importedTrack.id);
+    expect(controller.allTracks.any((t) => t.title == 'Aurora Live'), isFalse);
+
+    // Test toggleMute mutes and restores previous volume
+    await controller.setVolume(0.65);
+    await controller.toggleMute();
+    expect(controller.volume, 0.0);
+    await controller.toggleMute();
+    expect(controller.volume, 0.65);
   });
 
   test('60FPS spectrumNotifier updates without triggering full-app rebuild stutter', () async {
@@ -138,6 +151,9 @@ void main() {
     );
 
     expect(frame.bins.length, 32);
+    expect(frame.pitchClasses.length, 12);
+    expect(frame.pitchTrail1.length, 12);
+    expect(frame.pitchTrail2.length, 12);
     expect(frame.bassEnergy, inInclusiveRange(0.02, 1.0));
     expect(frame.midEnergy, inInclusiveRange(0.02, 1.0));
     expect(frame.trebleEnergy, inInclusiveRange(0.02, 1.0));
@@ -211,7 +227,23 @@ void main() {
     await tester.pump(const Duration(milliseconds: 50));
 
     expect(find.text('AuraMusic'), findsOneWidget);
+    expect(find.text('本地音乐播放器'), findsOneWidget);
     expect(find.byType(FluidWaveRippleVisualizer), findsOneWidget);
     expect(find.textContaining('Neon Horizon'), findsWidgets);
+  });
+
+  testWidgets('Medium Desktop (860-930px) renders cleanly without layout overflow', (tester) async {
+    tester.view.physicalSize = const Size(880, 760);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+
+    final controller = AudioEngineController();
+    addTearDown(controller.dispose);
+
+    await tester.pumpWidget(AuraMusicApp(controller: controller));
+    await tester.pump(const Duration(milliseconds: 50));
+
+    expect(find.text('本地音乐播放器'), findsOneWidget);
+    expect(find.byType(FluidWaveRippleVisualizer), findsOneWidget);
   });
 }

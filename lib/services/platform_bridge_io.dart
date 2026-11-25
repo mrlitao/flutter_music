@@ -167,6 +167,78 @@ class PlatformAudioBridge {
 
   List<double>? getRealtimeFrequencyBins() => null;
 
+  File _getLibraryCacheFile() {
+    String baseDir;
+    try {
+      if (Platform.isWindows) {
+        baseDir = Platform.environment['APPDATA'] ?? Directory.systemTemp.path;
+      } else {
+        baseDir = Platform.environment['HOME'] ?? Directory.systemTemp.path;
+      }
+    } catch (_) {
+      baseDir = Directory.systemTemp.path;
+    }
+    final appDir = Directory(p.join(baseDir, 'AuraMusic'));
+    if (!appDir.existsSync()) {
+      appDir.createSync(recursive: true);
+    }
+    return File(p.join(appDir.path, 'library_cache.json'));
+  }
+
+  /// Restores previously imported local tracks from `library_cache.json`.
+  Future<List<Track>> loadSavedImportedTracks() async {
+    try {
+      final cacheFile = _getLibraryCacheFile();
+      if (!await cacheFile.exists()) return const [];
+      final raw = await cacheFile.readAsString();
+      final List<dynamic> decoded = jsonDecode(raw) as List<dynamic>;
+      final restored = <Track>[];
+      for (int i = 0; i < decoded.length; i++) {
+        final item = decoded[i] as Map<String, dynamic>;
+        final filePath = item['filePath'] as String? ?? '';
+        if (filePath.isEmpty) continue;
+        final file = File(filePath);
+        if (!await file.exists()) continue;
+
+        final parsed = await _parseIoFile(file, i);
+        restored.add(
+          parsed.copyWith(
+            isFavorite: (item['isFavorite'] as bool?) ?? false,
+            playCount: (item['playCount'] as int?) ?? 0,
+            importedTimestampMs:
+                (item['importedTimestampMs'] as int?) ?? parsed.importedTimestampMs,
+          ),
+        );
+      }
+      return restored;
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  /// Persists imported local tracks (non-built-in) to `library_cache.json`.
+  Future<void> saveImportedTracks(List<Track> tracks) async {
+    try {
+      final cacheFile = _getLibraryCacheFile();
+      final userTracks = tracks.where((t) => !t.isBuiltInDemo).toList();
+      final payload = userTracks
+          .map(
+            (t) => {
+              'filePath': t.filePath,
+              'isFavorite': t.isFavorite,
+              'playCount': t.playCount,
+              'importedTimestampMs': t.importedTimestampMs,
+            },
+          )
+          .toList();
+      await cacheFile.writeAsString(jsonEncode(payload), flush: true);
+    } catch (_) {}
+  }
+
+  Future<void> deleteSavedTrack(Track track) async {
+    // Native deletion is persisted via saveImportedTracks() after removing from controller list
+  }
+
   Future<Uint8List?> loadWavBytesForFft(Track track) async {
     if (!track.filePath.toLowerCase().endsWith('.wav')) return null;
     try {

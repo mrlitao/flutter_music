@@ -26,6 +26,12 @@ class PlatformAudioBridge {
 
   List<double>? getRealtimeFrequencyBins() => null;
 
+  Future<List<Track>> loadSavedImportedTracks() async => const [];
+
+  Future<void> saveImportedTracks(List<Track> tracks) async {}
+
+  Future<void> deleteSavedTrack(Track track) async {}
+
   Future<List<Track>> scanDefaultDirectories() async => const [];
 
   Future<List<Track>> scanCustomDirectory(String directoryPath) async => const [];

@@ -94,9 +94,6 @@ class AudioMetadataParser {
     if (lyrics.isEmpty && embeddedLyrics != null && embeddedLyrics.isNotEmpty) {
       lyrics = LrcParser.parse(embeddedLyrics);
     }
-    if (lyrics.isEmpty) {
-      lyrics = _buildDefaultSynchronizedLyrics(title, artist, album);
-    }
 
     final palette = coverBytes != null
         ? _extractPaletteFromCoverBytes(coverBytes, indexSeed)
@@ -453,21 +450,6 @@ class AudioMetadataParser {
     final hsl3 = hsl1.withHue((hsl1.hue + 230) % 360).withSaturation(0.78).withLightness(0.54);
 
     return [hsl1.toColor(), hsl2.toColor(), hsl3.toColor()];
-  }
-
-  static List<LyricLine> _buildDefaultSynchronizedLyrics(
-    String title,
-    String artist,
-    String album,
-  ) {
-    return [
-      LyricLine(timestamp: const Duration(seconds: 0), text: '$title - $artist'),
-      LyricLine(timestamp: const Duration(seconds: 4), text: '专辑：$album · AuraMusic 无损声学引擎'),
-      const LyricLine(timestamp: Duration(seconds: 9), text: '全息毛玻璃声场已开启 · 流线波纹实时律动中 ♪'),
-      const LyricLine(timestamp: Duration(seconds: 16), text: '低频脉冲驱动内环扩张，中高频谱描绘流光曲线'),
-      const LyricLine(timestamp: Duration(seconds: 24), text: '支持同目录同名 .lrc 歌词文件或内嵌歌词自动匹配'),
-      const LyricLine(timestamp: Duration(seconds: 34), text: '在纯粹通透的磨砂光影里，聆听每一处声音细节'),
-    ];
   }
 }
 
