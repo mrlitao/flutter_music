@@ -95,6 +95,16 @@ void main() {
     await controller.deleteTrack(importedTrack.id);
     expect(controller.allTracks.any((t) => t.title == 'Aurora Live'), isFalse);
 
+    // Test playlist & previous/next order
+    final firstId = controller.playlist.first.id;
+    final secondId = controller.playlist[1].id;
+    await controller.selectTrack(controller.playlist.first, autoPlay: true);
+    expect(controller.currentTrack.id, firstId);
+    await controller.nextTrack();
+    expect(controller.currentTrack.id, secondId);
+    await controller.previousTrack();
+    expect(controller.currentTrack.id, firstId);
+
     // Test toggleMute mutes and restores previous volume
     await controller.setVolume(0.65);
     await controller.toggleMute();
@@ -182,7 +192,7 @@ void main() {
   testWidgets('Small Window (Mobile) renders 5-entry bottom TabBar & toggles raised circular player', (
     tester,
   ) async {
-    tester.view.physicalSize = const Size(412, 892);
+    tester.view.physicalSize = const Size(360, 600);
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.resetPhysicalSize);
 
@@ -196,6 +206,7 @@ void main() {
     expect(find.text('本地歌曲'), findsWidgets);
     expect(find.text('资料库'), findsOneWidget);
     expect(find.text('我的'), findsOneWidget);
+    expect(find.byKey(const ValueKey('az_anchor_bar')), findsOneWidget);
     final circularPlayerBtn = find.byKey(const ValueKey('raised_circular_player_tab_button'));
     expect(circularPlayerBtn, findsOneWidget);
 

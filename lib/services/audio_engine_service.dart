@@ -21,6 +21,7 @@ class AudioEngineController extends ChangeNotifier {
   Timer? _sleepTimer;
 
   List<Track> _tracks = [];
+  final List<Track> _playlist = [];
   final List<String> _scannedFolders = [];
   int _currentIndex = 0;
   bool _isPlaying = false;
@@ -65,6 +66,8 @@ class AudioEngineController extends ChangeNotifier {
 
   // Getters
   List<Track> get allTracks => _tracks;
+  List<Track> get playlist => List.unmodifiable(_playlist);
+  bool isInPlaylist(String trackId) => _playlist.any((t) => t.id == trackId);
   List<String> get scannedFolders => List.unmodifiable(_scannedFolders);
   bool get isPlaying => _isPlaying;
   bool get isScanning => _isScanning;
@@ -182,6 +185,9 @@ class AudioEngineController extends ChangeNotifier {
 
   Future<void> _initLibraryAndEngine() async {
     _tracks = DemoWavGenerator.buildShowcaseTracks();
+    _playlist
+      ..clear()
+      ..addAll(_tracks);
     _duration = currentTrack.duration;
     await _prepareFftForTrack(currentTrack);
     if (_isDisposed) return;
@@ -429,6 +435,7 @@ class AudioEngineController extends ChangeNotifier {
     }
 
     _tracks.removeAt(idx);
+    _playlist.removeWhere((t) => t.id == target.id);
     if (_tracks.isEmpty) {
       _tracks = DemoWavGenerator.buildShowcaseTracks();
       _currentIndex = 0;
@@ -444,7 +451,22 @@ class AudioEngineController extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Adds [track] to the active playback playlist without interrupting playback.
+  void addToPlaylist(Track track) {
+    if (!_playlist.any((t) => t.id == track.id)) {
+      _playlist.add(track);
+      _statusMessage = '已加入播放列表: ${track.title}';
+      notifyListeners();
+    } else {
+      _statusMessage = '已在播放列表中: ${track.title}';
+      notifyListeners();
+    }
+  }
+
   Future<void> selectTrack(Track track, {bool autoPlay = true}) async {
+    if (autoPlay && !_playlist.any((t) => t.id == track.id)) {
+      _playlist.add(track);
+    }
     final idx = _tracks.indexWhere((t) => t.id == track.id);
     if (idx >= 0) {
       await selectTrackAtIndex(idx, autoPlay: autoPlay);
@@ -515,28 +537,31 @@ class AudioEngineController extends ChangeNotifier {
   }
 
   Future<void> nextTrack() async {
-    if (_tracks.isEmpty) return;
-    if (_playMode == PlayMode.shuffle && _tracks.length > 1) {
+    final List<Track> queue = _playlist.isNotEmpty ? _playlist : filteredTracks;
+    if (queue.isEmpty) return;
+
+    final int curQueueIdx = queue.indexWhere((t) => t.id == currentTrack.id);
+    if (_playMode == PlayMode.shuffle && queue.length > 1) {
       final rand = math.Random();
-      int nextIdx = _currentIndex;
-      while (nextIdx == _currentIndex) {
-        nextIdx = rand.nextInt(_tracks.length);
+      int nextQIdx = curQueueIdx < 0 ? 0 : curQueueIdx;
+      while (nextQIdx == curQueueIdx) {
+        nextQIdx = rand.nextInt(queue.length);
       }
-      await selectTrackAtIndex(nextIdx, autoPlay: true);
+      await selectTrack(queue[nextQIdx], autoPlay: true);
     } else {
-      final nextIdx = (_currentIndex + 1) % _tracks.length;
-      await selectTrackAtIndex(nextIdx, autoPlay: true);
+      final int nextQIdx = curQueueIdx < 0 ? 0 : (curQueueIdx + 1) % queue.length;
+      await selectTrack(queue[nextQIdx], autoPlay: true);
     }
   }
 
   Future<void> previousTrack() async {
-    if (_tracks.isEmpty) return;
-    if (_position.inSeconds > 4) {
-      await seekTo(Duration.zero);
-      return;
-    }
-    final prevIdx = (_currentIndex - 1 + _tracks.length) % _tracks.length;
-    await selectTrackAtIndex(prevIdx, autoPlay: true);
+    final List<Track> queue = _playlist.isNotEmpty ? _playlist : filteredTracks;
+    if (queue.isEmpty) return;
+
+    final int curQueueIdx = queue.indexWhere((t) => t.id == currentTrack.id);
+    final int prevQIdx =
+        curQueueIdx < 0 ? queue.length - 1 : (curQueueIdx - 1 + queue.length) % queue.length;
+    await selectTrack(queue[prevQIdx], autoPlay: true);
   }
 
   Future<void> seekTo(Duration target) async {

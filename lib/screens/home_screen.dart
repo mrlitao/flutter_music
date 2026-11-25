@@ -64,6 +64,8 @@ class _AuraMusicHomeScreenState extends State<AuraMusicHomeScreen>
   final GlobalKey _circularPlayerBtnKey = GlobalKey();
 
   bool _mobileShowLyricsFull = false;
+  String? _activeAnchorLetter;
+  final ScrollController _trackListScrollController = ScrollController();
   final FocusNode _keyboardFocusNode = FocusNode();
   final TextEditingController _searchTextController = TextEditingController();
 
@@ -80,6 +82,7 @@ class _AuraMusicHomeScreenState extends State<AuraMusicHomeScreen>
   @override
   void dispose() {
     _rippleTransitionController.dispose();
+    _trackListScrollController.dispose();
     _keyboardFocusNode.dispose();
     _searchTextController.dispose();
     super.dispose();
@@ -1645,6 +1648,46 @@ class _AuraMusicHomeScreenState extends State<AuraMusicHomeScreen>
     return _buildTrackListView(ctrl, textColor, subColor, accent);
   }
 
+  void _scrollToTrackLetter(String letter, List<Track> tracks) {
+    if (tracks.isEmpty || !_trackListScrollController.hasClients) return;
+    setState(() => _activeAnchorLetter = letter);
+
+    int targetIdx = -1;
+    if (letter == '#') {
+      targetIdx = tracks.indexWhere((t) {
+        final trimmed = t.title.trim();
+        if (trimmed.isEmpty) return false;
+        final code = trimmed.toUpperCase().codeUnitAt(0);
+        return code < 65 || code > 90;
+      });
+    } else {
+      targetIdx = tracks.indexWhere(
+        (t) => t.title.trim().toUpperCase().startsWith(letter),
+      );
+      if (targetIdx < 0) {
+        // Fallback: find first track whose leading ASCII letter is >= target letter
+        final targetCode = letter.codeUnitAt(0);
+        targetIdx = tracks.indexWhere((t) {
+          final trimmed = t.title.trim().toUpperCase();
+          if (trimmed.isEmpty) return false;
+          final c = trimmed.codeUnitAt(0);
+          return c >= targetCode && c <= 90;
+        });
+      }
+    }
+
+    if (targetIdx >= 0) {
+      const double itemExtent = 68.0;
+      final double maxScroll = _trackListScrollController.position.maxScrollExtent;
+      final double targetOffset = (targetIdx * itemExtent).clamp(0.0, maxScroll);
+      _trackListScrollController.animateTo(
+        targetOffset,
+        duration: const Duration(milliseconds: 360),
+        curve: Curves.easeOutCubic,
+      );
+    }
+  }
+
   Widget _buildTrackListView(
     AudioEngineController ctrl,
     Color textColor,
@@ -1671,118 +1714,172 @@ class _AuraMusicHomeScreenState extends State<AuraMusicHomeScreen>
       );
     }
 
-    return ListView.separated(
-      itemCount: tracks.length,
-      separatorBuilder: (_, _) => const SizedBox(height: 6),
-      itemBuilder: (context, index) {
-        final track = tracks[index];
-        final isCurrent = track.id == ctrl.currentTrack.id;
+    const List<String> alphabet = [
+      'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M',
+      'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', '#',
+    ];
 
-        return InkWell(
-          borderRadius: BorderRadius.circular(14),
-          onTap: () => ctrl.selectTrack(track, autoPlay: true),
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 220),
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(14),
-              color: isCurrent
-                  ? accent.withValues(alpha: ctrl.isLightGlassMode ? 0.18 : 0.20)
-                  : Colors.white.withValues(alpha: ctrl.isLightGlassMode ? 0.32 : 0.04),
-              border: Border.all(
-                color: isCurrent
-                    ? accent.withValues(alpha: 0.55)
-                    : Colors.white.withValues(alpha: 0.08),
-              ),
-            ),
-            child: Row(
-              children: [
-                AlbumCoverAvatar(
-                  coverBytes: track.coverBytes,
-                  colors: track.paletteColors,
-                  size: 42,
-                  borderRadius: 10,
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
+    return Stack(
+      children: [
+        ListView.builder(
+          controller: _trackListScrollController,
+          itemExtent: 68.0,
+          padding: const EdgeInsets.only(right: 26),
+          itemCount: tracks.length,
+          itemBuilder: (context, index) {
+            final track = tracks[index];
+            final isCurrent = track.id == ctrl.currentTrack.id;
+            final inPlaylist = ctrl.isInPlaylist(track.id);
+
+            return Padding(
+              padding: const EdgeInsets.only(bottom: 6),
+              child: InkWell(
+                borderRadius: BorderRadius.circular(14),
+                onTap: () => ctrl.selectTrack(track, autoPlay: true),
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 220),
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(14),
+                    color: isCurrent
+                        ? accent.withValues(alpha: ctrl.isLightGlassMode ? 0.18 : 0.20)
+                        : Colors.white.withValues(alpha: ctrl.isLightGlassMode ? 0.32 : 0.04),
+                    border: Border.all(
+                      color: isCurrent
+                          ? accent.withValues(alpha: 0.55)
+                          : Colors.white.withValues(alpha: 0.08),
+                    ),
+                  ),
+                  child: Row(
                     children: [
-                      Row(
-                        children: [
-                          if (isCurrent)
-                            Padding(
-                              padding: const EdgeInsets.only(right: 5),
-                              child: Icon(
-                                ctrl.isPlaying
-                                    ? Icons.graphic_eq_rounded
-                                    : Icons.pause_circle_filled_rounded,
-                                size: 15,
-                                color: accent,
-                              ),
+                      AlbumCoverAvatar(
+                        coverBytes: track.coverBytes,
+                        colors: track.paletteColors,
+                        size: 42,
+                        borderRadius: 10,
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                if (isCurrent)
+                                  Padding(
+                                    padding: const EdgeInsets.only(right: 5),
+                                    child: Icon(
+                                      ctrl.isPlaying
+                                          ? Icons.graphic_eq_rounded
+                                          : Icons.pause_circle_filled_rounded,
+                                      size: 15,
+                                      color: accent,
+                                    ),
+                                  ),
+                                Expanded(
+                                  child: Text(
+                                    track.title,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(
+                                      fontSize: 13,
+                                      fontWeight: isCurrent ? FontWeight.w700 : FontWeight.w600,
+                                      color: isCurrent ? accent : textColor,
+                                    ),
+                                  ),
+                                ),
+                              ],
                             ),
-                          Expanded(
-                            child: Text(
-                              track.title,
+                            const SizedBox(height: 2),
+                            Text(
+                              '${track.artist} · 播放 ${track.playCount} 次 · ${track.formatBadge}',
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
-                              style: TextStyle(
-                                fontSize: 13,
-                                fontWeight: isCurrent ? FontWeight.w700 : FontWeight.w600,
-                                color: isCurrent ? accent : textColor,
-                              ),
+                              style: TextStyle(fontSize: 11, color: subColor),
                             ),
-                          ),
-                        ],
+                          ],
+                        ),
                       ),
-                      const SizedBox(height: 2),
+                      IconButton(
+                        tooltip: inPlaylist ? '已在播放列表中' : '添加至播放列表',
+                        visualDensity: VisualDensity.compact,
+                        constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+                        padding: EdgeInsets.zero,
+                        onPressed: () => ctrl.addToPlaylist(track),
+                        icon: Icon(
+                          inPlaylist
+                              ? Icons.playlist_add_check_rounded
+                              : Icons.playlist_add_rounded,
+                          size: 19,
+                          color: inPlaylist ? accent : subColor,
+                        ),
+                      ),
+                      const SizedBox(width: 4),
                       Text(
-                        '${track.artist} · 播放 ${track.playCount} 次 · ${track.formatBadge}',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(fontSize: 11, color: subColor),
+                        track.formattedDuration,
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontFamily: 'monospace',
+                          color: subColor,
+                        ),
                       ),
                     ],
                   ),
                 ),
-                IconButton(
-                  visualDensity: VisualDensity.compact,
-                  constraints: const BoxConstraints(minWidth: 30, minHeight: 30),
-                  padding: EdgeInsets.zero,
-                  onPressed: () => ctrl.toggleFavorite(track.id),
-                  icon: Icon(
-                    track.isFavorite ? Icons.favorite_rounded : Icons.favorite_border_rounded,
-                    size: 17,
-                    color: track.isFavorite ? Colors.pinkAccent : subColor,
-                  ),
-                ),
-                if (!track.isBuiltInDemo)
-                  IconButton(
-                    tooltip: '删除导入歌曲',
-                    visualDensity: VisualDensity.compact,
-                    constraints: const BoxConstraints(minWidth: 30, minHeight: 30),
-                    padding: EdgeInsets.zero,
-                    onPressed: () => ctrl.deleteTrack(track.id),
-                    icon: Icon(
-                      Icons.delete_outline_rounded,
-                      size: 17,
-                      color: subColor.withValues(alpha: 0.78),
-                    ),
-                  ),
-                const SizedBox(width: 4),
-                Text(
-                  track.formattedDuration,
-                  style: TextStyle(
-                    fontSize: 11,
-                    fontFamily: 'monospace',
-                    color: subColor,
-                  ),
-                ),
-              ],
+              ),
+            );
+          },
+        ),
+
+        // Floating A-Z Name Anchor Index Bar on the right
+        Positioned(
+          right: 0,
+          top: 4,
+          bottom: 4,
+          child: Container(
+            key: const ValueKey('az_anchor_bar'),
+            width: 22,
+            padding: const EdgeInsets.symmetric(vertical: 4),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(11),
+              color: ctrl.isLightGlassMode
+                  ? Colors.white.withValues(alpha: 0.55)
+                  : Colors.black.withValues(alpha: 0.35),
+              border: Border.all(
+                color: Colors.white.withValues(alpha: 0.14),
+                width: 0.8,
+              ),
+            ),
+            child: LayoutBuilder(
+              builder: (context, barBox) {
+                return Column(
+                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                  children: alphabet.map((letter) {
+                    final isActive = _activeAnchorLetter == letter;
+                    return Expanded(
+                      child: InkWell(
+                        onTap: () => _scrollToTrackLetter(letter, tracks),
+                        child: Center(
+                          child: Text(
+                            letter,
+                            style: TextStyle(
+                              fontSize: isActive ? 10.5 : 9.0,
+                              height: 1.0,
+                              fontWeight: isActive ? FontWeight.w800 : FontWeight.w600,
+                              color: isActive ? accent : subColor,
+                            ),
+                          ),
+                        ),
+                      ),
+                    );
+                  }).toList(),
+                );
+              },
             ),
           ),
-        );
-      },
+        ),
+      ],
     );
   }
 
@@ -1892,6 +1989,18 @@ class _AuraMusicHomeScreenState extends State<AuraMusicHomeScreen>
               Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
+                  IconButton(
+                    tooltip: ctrl.currentTrack.isFavorite ? '取消喜欢' : '加入我喜欢的',
+                    visualDensity: VisualDensity.compact,
+                    onPressed: () => ctrl.toggleFavorite(ctrl.currentTrack.id),
+                    icon: Icon(
+                      ctrl.currentTrack.isFavorite
+                          ? Icons.favorite_rounded
+                          : Icons.favorite_border_rounded,
+                      size: 19,
+                      color: ctrl.currentTrack.isFavorite ? Colors.pinkAccent : subColor,
+                    ),
+                  ),
                   IconButton(
                     tooltip: ctrl.playMode.label,
                     visualDensity: VisualDensity.compact,
