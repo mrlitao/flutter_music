@@ -1,6 +1,8 @@
 #include "flutter_window.h"
 
 #include <windows.h>
+#include <mfapi.h>
+#include <mfplay.h>
 #include <mmsystem.h>
 #include <shobjidl.h>
 
@@ -10,6 +12,8 @@
 
 #include "flutter/generated_plugin_registrant.h"
 #include "utils.h"
+
+#pragma warning(disable : 4995)
 
 namespace {
 
@@ -36,25 +40,31 @@ std::string WideToUtf8(const std::wstring& wide) {
   return utf8;
 }
 
-std::wstring MciQuery(const std::wstring& cmd) {
-  wchar_t buf[256] = {0};
-  if (mciSendStringW(cmd.c_str(), buf, 255, nullptr) == 0) {
-    return std::wstring(buf);
-  }
-  return L"";
-}
-
 }  // namespace
 
 FlutterWindow::FlutterWindow(const flutter::DartProject& project)
     : project_(project) {}
 
-FlutterWindow::~FlutterWindow() {}
+FlutterWindow::~FlutterWindow() {
+  ReleaseMediaPlayer();
+}
+
+void FlutterWindow::ReleaseMediaPlayer() {
+  if (mfp_player_ != nullptr) {
+    mfp_player_->Stop();
+    mfp_player_->Shutdown();
+    mfp_player_->Release();
+    mfp_player_ = nullptr;
+  }
+  current_opened_path_.clear();
+}
 
 bool FlutterWindow::OnCreate() {
   if (!Win32Window::OnCreate()) {
     return false;
   }
+
+  MFStartup(MF_VERSION);
 
   RECT frame = GetClientArea();
 
@@ -98,7 +108,8 @@ void FlutterWindow::RegisterAuraMusicChannel() {
           }
           std::string path_utf8;
           int pos_ms = 0;
-          double volume = 0.8;
+          double volume = 0.85;
+          double speed = 1.0;
 
           auto path_it = args->find(flutter::EncodableValue("path"));
           if (path_it != args->end() &&
@@ -115,56 +126,86 @@ void FlutterWindow::RegisterAuraMusicChannel() {
               std::holds_alternative<double>(vol_it->second)) {
             volume = std::get<double>(vol_it->second);
           }
-
-          std::wstring wide_path = Utf8ToWide(path_utf8);
-          if (wide_path != current_opened_path_) {
-            mciSendStringW(L"close auraplayer", nullptr, 0, nullptr);
-            std::wstring open_cmd =
-                L"open \"" + wide_path + L"\" alias auraplayer";
-            if (mciSendStringW(open_cmd.c_str(), nullptr, 0, nullptr) != 0) {
-              // Fallback with mpegvideo type for broad codec support
-              open_cmd = L"open \"" + wide_path +
-                         L"\" type mpegvideo alias auraplayer";
-              mciSendStringW(open_cmd.c_str(), nullptr, 0, nullptr);
-            }
-            mciSendStringW(L"set auraplayer time format milliseconds", nullptr,
-                           0, nullptr);
-            current_opened_path_ = wide_path;
+          auto spd_it = args->find(flutter::EncodableValue("speed"));
+          if (spd_it != args->end() &&
+              std::holds_alternative<double>(spd_it->second)) {
+            speed = std::get<double>(spd_it->second);
           }
 
-          int vol_mci = static_cast<int>(volume * 1000.0);
-          if (vol_mci < 0) vol_mci = 0;
-          if (vol_mci > 1000) vol_mci = 1000;
-          std::wstring vol_cmd = L"setaudio auraplayer volume to " +
-                                 std::to_wstring(vol_mci);
-          mciSendStringW(vol_cmd.c_str(), nullptr, 0, nullptr);
+          std::wstring wide_path = Utf8ToWide(path_utf8);
+          bool opened_ok = true;
+          bool newly_created = false;
 
-          std::wstring play_cmd =
-              L"play auraplayer from " + std::to_wstring(pos_ms);
-          mciSendStringW(play_cmd.c_str(), nullptr, 0, nullptr);
+          if (wide_path != current_opened_path_ || mfp_player_ == nullptr) {
+            ReleaseMediaPlayer();
+            // Create Windows Media Foundation player with hWnd = nullptr (audio-only mode
+            // for .mp4 video/audio containers, zero video rendering overhead, async workqueue!)
+            // fStartPlayback = TRUE automatically starts playback when async media load finishes.
+            HRESULT hr = MFPCreateMediaPlayer(
+                wide_path.c_str(), TRUE, MFP_OPTION_NONE, nullptr, nullptr,
+                &mfp_player_);
+            if (SUCCEEDED(hr) && mfp_player_ != nullptr) {
+              current_opened_path_ = wide_path;
+              newly_created = true;
+            } else {
+              opened_ok = false;
+            }
+          }
 
-          std::wstring len_str = MciQuery(L"status auraplayer length");
           int duration_ms = 0;
-          if (!len_str.empty()) {
-            duration_ms = _wtoi(len_str.c_str());
+          if (mfp_player_ != nullptr) {
+            float vol_f = static_cast<float>(volume);
+            if (vol_f < 0.0f) vol_f = 0.0f;
+            if (vol_f > 1.0f) vol_f = 1.0f;
+            mfp_player_->SetVolume(vol_f);
+
+            if (!newly_created) {
+              float rate_f = static_cast<float>(speed);
+              if (rate_f >= 0.5f && rate_f <= 2.0f) {
+                mfp_player_->SetRate(rate_f);
+              }
+              if (pos_ms > 50) {
+                PROPVARIANT pos_var;
+                PropVariantInit(&pos_var);
+                pos_var.vt = VT_I8;
+                pos_var.hVal.QuadPart = static_cast<LONGLONG>(pos_ms) * 10000LL;
+                mfp_player_->SetPosition(MFP_POSITIONTYPE_100NS, &pos_var);
+                PropVariantClear(&pos_var);
+              }
+              mfp_player_->Play();
+            }
+
+            PROPVARIANT dur_var;
+            PropVariantInit(&dur_var);
+            if (SUCCEEDED(
+                    mfp_player_->GetDuration(MFP_POSITIONTYPE_100NS, &dur_var))) {
+              if (dur_var.vt == VT_I8 || dur_var.vt == VT_UI8) {
+                duration_ms =
+                    static_cast<int>(dur_var.hVal.QuadPart / 10000LL);
+              }
+            }
+            PropVariantClear(&dur_var);
           }
 
           flutter::EncodableMap res;
           res[flutter::EncodableValue("durationMs")] =
               flutter::EncodableValue(duration_ms);
+          res[flutter::EncodableValue("ok")] =
+              flutter::EncodableValue(opened_ok);
           result->Success(flutter::EncodableValue(res));
           return;
         }
 
         if (method == "pause") {
-          mciSendStringW(L"pause auraplayer", nullptr, 0, nullptr);
+          if (mfp_player_ != nullptr) {
+            mfp_player_->Pause();
+          }
           result->Success();
           return;
         }
 
         if (method == "stop") {
-          mciSendStringW(L"close auraplayer", nullptr, 0, nullptr);
-          current_opened_path_.clear();
+          ReleaseMediaPlayer();
           result->Success();
           return;
         }
@@ -180,15 +221,13 @@ void FlutterWindow::RegisterAuraMusicChannel() {
               pos_ms = std::get<int32_t>(it->second);
             }
           }
-          std::wstring mode = MciQuery(L"status auraplayer mode");
-          if (mode == L"playing") {
-            std::wstring cmd =
-                L"play auraplayer from " + std::to_wstring(pos_ms);
-            mciSendStringW(cmd.c_str(), nullptr, 0, nullptr);
-          } else {
-            std::wstring cmd =
-                L"seek auraplayer to " + std::to_wstring(pos_ms);
-            mciSendStringW(cmd.c_str(), nullptr, 0, nullptr);
+          if (mfp_player_ != nullptr) {
+            PROPVARIANT pos_var;
+            PropVariantInit(&pos_var);
+            pos_var.vt = VT_I8;
+            pos_var.hVal.QuadPart = static_cast<LONGLONG>(pos_ms) * 10000LL;
+            mfp_player_->SetPosition(MFP_POSITIONTYPE_100NS, &pos_var);
+            PropVariantClear(&pos_var);
           }
           result->Success();
           return;
@@ -197,7 +236,7 @@ void FlutterWindow::RegisterAuraMusicChannel() {
         if (method == "setVolume") {
           const auto* args =
               std::get_if<flutter::EncodableMap>(call.arguments());
-          double volume = 0.8;
+          double volume = 0.85;
           if (args) {
             auto it = args->find(flutter::EncodableValue("volume"));
             if (it != args->end() &&
@@ -205,21 +244,58 @@ void FlutterWindow::RegisterAuraMusicChannel() {
               volume = std::get<double>(it->second);
             }
           }
-          int vol_mci = static_cast<int>(volume * 1000.0);
-          std::wstring vol_cmd = L"setaudio auraplayer volume to " +
-                                 std::to_wstring(vol_mci);
-          mciSendStringW(vol_cmd.c_str(), nullptr, 0, nullptr);
+          if (mfp_player_ != nullptr) {
+            float vol_f = static_cast<float>(volume);
+            if (vol_f < 0.0f) vol_f = 0.0f;
+            if (vol_f > 1.0f) vol_f = 1.0f;
+            mfp_player_->SetVolume(vol_f);
+          }
+          result->Success();
+          return;
+        }
+
+        if (method == "setSpeed") {
+          const auto* args =
+              std::get_if<flutter::EncodableMap>(call.arguments());
+          double speed = 1.0;
+          if (args) {
+            auto it = args->find(flutter::EncodableValue("speed"));
+            if (it != args->end() &&
+                std::holds_alternative<double>(it->second)) {
+              speed = std::get<double>(it->second);
+            }
+          }
+          if (mfp_player_ != nullptr) {
+            mfp_player_->SetRate(static_cast<float>(speed));
+          }
           result->Success();
           return;
         }
 
         if (method == "getPosition") {
-          std::wstring pos_str = MciQuery(L"status auraplayer position");
-          std::wstring len_str = MciQuery(L"status auraplayer length");
           int pos_ms = -1;
           int len_ms = -1;
-          if (!pos_str.empty()) pos_ms = _wtoi(pos_str.c_str());
-          if (!len_str.empty()) len_ms = _wtoi(len_str.c_str());
+          if (mfp_player_ != nullptr) {
+            PROPVARIANT pos_var;
+            PropVariantInit(&pos_var);
+            if (SUCCEEDED(
+                    mfp_player_->GetPosition(MFP_POSITIONTYPE_100NS, &pos_var))) {
+              if (pos_var.vt == VT_I8 || pos_var.vt == VT_UI8) {
+                pos_ms = static_cast<int>(pos_var.hVal.QuadPart / 10000LL);
+              }
+            }
+            PropVariantClear(&pos_var);
+
+            PROPVARIANT dur_var;
+            PropVariantInit(&dur_var);
+            if (SUCCEEDED(
+                    mfp_player_->GetDuration(MFP_POSITIONTYPE_100NS, &dur_var))) {
+              if (dur_var.vt == VT_I8 || dur_var.vt == VT_UI8) {
+                len_ms = static_cast<int>(dur_var.hVal.QuadPart / 10000LL);
+              }
+            }
+            PropVariantClear(&dur_var);
+          }
           flutter::EncodableMap res;
           res[flutter::EncodableValue("positionMs")] =
               flutter::EncodableValue(pos_ms);
@@ -268,8 +344,8 @@ void FlutterWindow::RegisterAuraMusicChannel() {
                                          CLSCTX_INPROC_SERVER,
                                          IID_PPV_ARGS(&pfd)))) {
             COMDLG_FILTERSPEC rgSpec[] = {
-                {L"Audio Files (*.mp3;*.flac;*.wav;*.m4a;*.aac;*.ogg;*.wma)",
-                 L"*.mp3;*.flac;*.wav;*.m4a;*.aac;*.ogg;*.wma"},
+                {L"Audio & MP4 Files (*.mp3;*.mp4;*.flac;*.wav;*.m4a;*.aac;*.ogg;*.wma)",
+                 L"*.mp3;*.mp4;*.flac;*.wav;*.m4a;*.aac;*.ogg;*.wma"},
                 {L"All Files (*.*)", L"*.*"},
             };
             pfd->SetFileTypes(ARRAYSIZE(rgSpec), rgSpec);
@@ -310,7 +386,8 @@ void FlutterWindow::RegisterAuraMusicChannel() {
 }
 
 void FlutterWindow::OnDestroy() {
-  mciSendStringW(L"close auraplayer", nullptr, 0, nullptr);
+  ReleaseMediaPlayer();
+  MFShutdown();
   if (flutter_controller_) {
     flutter_controller_ = nullptr;
   }

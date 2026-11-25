@@ -71,7 +71,7 @@ class _ImportLocalMusicSheetState extends State<ImportLocalMusicSheet> {
                 ),
                 const SizedBox(height: 6),
                 Text(
-                  '支持无损 FLAC、WAV、MP3、M4A、AAC、OGG、WMA 格式，自动解析内嵌封面与同名 .lrc 歌词',
+                  '支持无损 FLAC、WAV、MP3、MP4、M4A、AAC、OGG、WMA 格式，自动解析内嵌封面与同名 .lrc 歌词',
                   style: TextStyle(fontSize: 12, color: subColor),
                 ),
                 const SizedBox(height: 16),

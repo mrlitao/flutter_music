@@ -14,6 +14,7 @@ import 'metadata_parser.dart';
 class PlatformAudioBridge {
   static const Set<String> supportedExtensions = {
     '.mp3',
+    '.mp4',
     '.flac',
     '.wav',
     '.m4a',
@@ -283,7 +284,7 @@ class PlatformAudioBridge {
         input['webkitdirectory'] = true.toJS;
         input['directory'] = true.toJS;
       } else {
-        input['accept'] = 'audio/*,.mp3,.flac,.wav,.m4a,.aac,.ogg,.wma,.lrc'.toJS;
+        input['accept'] = 'audio/*,video/mp4,.mp3,.mp4,.flac,.wav,.m4a,.aac,.ogg,.wma,.lrc'.toJS;
       }
 
       input['onchange'] = ((JSAny? _) {

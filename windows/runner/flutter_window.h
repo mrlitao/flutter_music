@@ -6,6 +6,9 @@
 #include <flutter/method_channel.h>
 #include <flutter/standard_method_codec.h>
 
+#include <windows.h>
+#include <mfplay.h>
+
 #include <memory>
 #include <string>
 
@@ -24,11 +27,13 @@ class FlutterWindow : public Win32Window {
 
  private:
   void RegisterAuraMusicChannel();
+  void ReleaseMediaPlayer();
 
   flutter::DartProject project_;
   std::unique_ptr<flutter::FlutterViewController> flutter_controller_;
   std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>> aura_channel_;
   std::wstring current_opened_path_;
+  IMFPMediaPlayer* mfp_player_ = nullptr;
 };
 
 #endif  // RUNNER_FLUTTER_WINDOW_H_

@@ -76,6 +76,14 @@ class AudioMetadataParser {
           bitrateKbps = id3Info.bitrateKbps ?? 320;
           coverBytes = id3Info.coverBytes;
           embeddedLyrics = id3Info.lyrics;
+        } else if (ext == 'MP4' || ext == 'M4A' || ext == 'AAC') {
+          final mp4Info = _parseMp4Container(headerBytes, fileSize);
+          title = mp4Info.title ?? title;
+          artist = mp4Info.artist ?? artist;
+          album = mp4Info.album ?? album;
+          duration = mp4Info.duration ?? _estimateDurationFromSize(fileSize, 256);
+          bitrateKbps = mp4Info.bitrateKbps ?? 256;
+          sampleRate = mp4Info.sampleRate ?? 48000;
         } else {
           duration = _estimateDurationFromSize(fileSize, 256);
         }
@@ -256,6 +264,43 @@ class AudioMetadataParser {
       final millis = ((fileSize - 44) * 1000) ~/ byteRate;
       result.duration = Duration(milliseconds: millis.clamp(500, 7200000));
       result.bitrateKbps = (byteRate * 8) ~/ 1000;
+    }
+    return result;
+  }
+
+  /// Parses MP4 / M4A ISO Base Media container (`mvhd` box for exact duration & bitrate).
+  static _ParsedTagResult _parseMp4Container(Uint8List bytes, int fileSize) {
+    final result = _ParsedTagResult();
+    result.sampleRate = 48000;
+    // Locate 'mvhd' (0x6D, 0x76, 0x68, 0x64) atom in headerBytes
+    for (int i = 0; i + 32 < bytes.length; i++) {
+      if (bytes[i] == 0x6D &&
+          bytes[i + 1] == 0x76 &&
+          bytes[i + 2] == 0x68 &&
+          bytes[i + 3] == 0x64) {
+        final int version = bytes[i + 4];
+        final bd = ByteData.sublistView(bytes);
+        int timescale = 0;
+        int durationUnits = 0;
+        if (version == 0 && i + 24 <= bytes.length) {
+          timescale = bd.getUint32(i + 16, Endian.big);
+          durationUnits = bd.getUint32(i + 20, Endian.big);
+        } else if (version == 1 && i + 36 <= bytes.length) {
+          timescale = bd.getUint32(i + 24, Endian.big);
+          final high = bd.getUint32(i + 28, Endian.big);
+          final low = bd.getUint32(i + 32, Endian.big);
+          durationUnits = (high * 4294967296) + low;
+        }
+        if (timescale > 0 && durationUnits > 0) {
+          final int durationMs = ((durationUnits * 1000) / timescale).round();
+          if (durationMs > 500 && durationMs < 14400000) {
+            result.duration = Duration(milliseconds: durationMs);
+            final int sec = math.max(1, durationMs ~/ 1000);
+            result.bitrateKbps = ((fileSize * 8) ~/ (sec * 1000)).clamp(64, 9999);
+            break;
+          }
+        }
+      }
     }
     return result;
   }

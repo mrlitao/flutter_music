@@ -204,11 +204,17 @@ class _AuraMusicHomeScreenState extends State<AuraMusicHomeScreen>
           onKeyEvent: _handleKeyEvent,
           child: Scaffold(
             backgroundColor: Colors.transparent,
-            body: DynamicAuroraBackground(
-              colors: ctrl.activeAuroraColors,
-              phase: ctrl.spectrum.phase,
-              bassEnergy: ctrl.spectrum.bassEnergy,
-              isLightMode: isLight,
+            body: ValueListenableBuilder<SpectrumFrame>(
+              valueListenable: ctrl.spectrumNotifier,
+              builder: (context, liveSpectrum, staticBody) {
+                return DynamicAuroraBackground(
+                  colors: ctrl.activeAuroraColors,
+                  phase: liveSpectrum.phase,
+                  bassEnergy: liveSpectrum.bassEnergy,
+                  isLightMode: isLight,
+                  child: staticBody!,
+                );
+              },
               child: SafeArea(
                 child: LayoutBuilder(
                   builder: (context, constraints) {
@@ -683,13 +689,18 @@ class _AuraMusicHomeScreenState extends State<AuraMusicHomeScreen>
                 return Column(
                   children: [
                     Center(
-                      child: FluidWaveRippleVisualizer(
-                        track: ctrl.currentTrack,
-                        spectrum: ctrl.spectrum,
-                        colors: ctrl.activeAuroraColors,
-                        isPlaying: ctrl.isPlaying,
-                        size: visSize,
-                        onTapCenter: ctrl.togglePlayPause,
+                      child: ValueListenableBuilder<SpectrumFrame>(
+                        valueListenable: ctrl.spectrumNotifier,
+                        builder: (context, liveSpectrum, _) {
+                          return FluidWaveRippleVisualizer(
+                            track: ctrl.currentTrack,
+                            spectrum: liveSpectrum,
+                            colors: ctrl.activeAuroraColors,
+                            isPlaying: ctrl.isPlaying,
+                            size: visSize,
+                            onTapCenter: ctrl.togglePlayPause,
+                          );
+                        },
                       ),
                     ),
                     Text(
@@ -741,42 +752,47 @@ class _AuraMusicHomeScreenState extends State<AuraMusicHomeScreen>
     bool isLight,
   ) {
     final totalMs = ctrl.duration.inMilliseconds.clamp(1, 36000000);
-    final posMs = ctrl.position.inMilliseconds.clamp(0, totalMs);
-    final progress = (posMs / totalMs).clamp(0.0, 1.0);
 
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
-        Row(
-          children: [
-            Text(
-              _formatDuration(ctrl.position),
-              style: TextStyle(fontSize: 11, fontFamily: 'monospace', color: subColor),
-            ),
-            Expanded(
-              child: SliderTheme(
-                data: SliderTheme.of(context).copyWith(
-                  trackHeight: 3.0,
-                  thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 5.0),
-                  overlayShape: const RoundSliderOverlayShape(overlayRadius: 10),
+        ValueListenableBuilder<Duration>(
+          valueListenable: ctrl.positionNotifier,
+          builder: (context, livePos, _) {
+            final posMs = livePos.inMilliseconds.clamp(0, totalMs);
+            final progress = (posMs / totalMs).clamp(0.0, 1.0);
+            return Row(
+              children: [
+                Text(
+                  _formatDuration(livePos),
+                  style: TextStyle(fontSize: 11, fontFamily: 'monospace', color: subColor),
                 ),
-                child: Slider(
-                  value: progress,
-                  activeColor: accent,
-                  inactiveColor: isLight
-                      ? Colors.black.withValues(alpha: 0.12)
-                      : Colors.white.withValues(alpha: 0.16),
-                  onChanged: (v) {
-                    ctrl.seekTo(Duration(milliseconds: (v * totalMs).round()));
-                  },
+                Expanded(
+                  child: SliderTheme(
+                    data: SliderTheme.of(context).copyWith(
+                      trackHeight: 3.0,
+                      thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 5.0),
+                      overlayShape: const RoundSliderOverlayShape(overlayRadius: 10),
+                    ),
+                    child: Slider(
+                      value: progress,
+                      activeColor: accent,
+                      inactiveColor: isLight
+                          ? Colors.black.withValues(alpha: 0.12)
+                          : Colors.white.withValues(alpha: 0.16),
+                      onChanged: (v) {
+                        ctrl.seekTo(Duration(milliseconds: (v * totalMs).round()));
+                      },
+                    ),
+                  ),
                 ),
-              ),
-            ),
-            Text(
-              _formatDuration(ctrl.duration),
-              style: TextStyle(fontSize: 11, fontFamily: 'monospace', color: subColor),
-            ),
-          ],
+                Text(
+                  _formatDuration(ctrl.duration),
+                  style: TextStyle(fontSize: 11, fontFamily: 'monospace', color: subColor),
+                ),
+              ],
+            );
+          },
         ),
         Row(
           mainAxisAlignment: MainAxisAlignment.spaceEvenly,
@@ -857,9 +873,6 @@ class _AuraMusicHomeScreenState extends State<AuraMusicHomeScreen>
     bool isLight,
   ) {
     final totalMs = ctrl.duration.inMilliseconds.clamp(1, 36000000);
-    final posMs = ctrl.position.inMilliseconds.clamp(0, totalMs);
-    final progress = (posMs / totalMs).clamp(0.0, 1.0);
-    final double bassPulse = ctrl.isPlaying ? ctrl.spectrum.beatPulse * 0.08 : 0.0;
 
     return SizedBox(
       height: 82,
@@ -931,78 +944,89 @@ class _AuraMusicHomeScreenState extends State<AuraMusicHomeScreen>
             child: GestureDetector(
               key: const ValueKey('raised_circular_player_tab_button'),
               onTapUp: (details) => _toggleMobilePlayerOverlay(details.globalPosition),
-              child: Transform.scale(
-                key: _circularPlayerBtnKey,
-                scale: 1.0 + bassPulse,
-                child: Container(
-                  width: 64,
-                  height: 64,
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    gradient: LinearGradient(
-                      begin: Alignment.topLeft,
-                      end: Alignment.bottomRight,
-                      colors: [
-                        ctrl.activeAuroraColors[0],
-                        ctrl.activeAuroraColors[1],
-                      ],
+              child: ValueListenableBuilder<SpectrumFrame>(
+                valueListenable: ctrl.spectrumNotifier,
+                builder: (context, liveSpectrum, _) {
+                  final double bassPulse = ctrl.isPlaying ? liveSpectrum.beatPulse * 0.08 : 0.0;
+                  final posMs = ctrl.positionNotifier.value.inMilliseconds.clamp(0, totalMs);
+                  final progress = (posMs / totalMs).clamp(0.0, 1.0);
+                  return Transform.scale(
+                    key: _circularPlayerBtnKey,
+                    scale: 1.0 + bassPulse,
+                    child: Container(
+                      width: 64,
+                      height: 64,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        gradient: LinearGradient(
+                          begin: Alignment.topLeft,
+                          end: Alignment.bottomRight,
+                          colors: [
+                            ctrl.activeAuroraColors[0],
+                            ctrl.activeAuroraColors[1],
+                          ],
+                        ),
+                        boxShadow: [
+                          BoxShadow(
+                            color: accent.withValues(alpha: _isMobilePlayerOpen ? 0.65 : 0.45),
+                            blurRadius: _isMobilePlayerOpen ? 20 : 14,
+                            spreadRadius: _isMobilePlayerOpen ? 2 : 1,
+                            offset: const Offset(0, 4),
+                          ),
+                        ],
+                        border: Border.all(
+                          color: Colors.white.withValues(alpha: _isMobilePlayerOpen ? 0.9 : 0.55),
+                          width: 2.2,
+                        ),
+                      ),
+                      child: Stack(
+                        alignment: Alignment.center,
+                        children: [
+                          SizedBox(
+                            width: 58,
+                            height: 58,
+                            child: CircularProgressIndicator(
+                              value: progress,
+                              strokeWidth: 2.2,
+                              backgroundColor: Colors.white.withValues(alpha: 0.18),
+                              valueColor: const AlwaysStoppedAnimation<Color>(Colors.white),
+                            ),
+                          ),
+                          Transform.rotate(
+                            angle: liveSpectrum.phase * 0.16,
+                            child: AlbumCoverAvatar(
+                              coverBytes: ctrl.currentTrack.coverBytes,
+                              colors: ctrl.activeAuroraColors,
+                              size: 48,
+                              isCircular: true,
+                            ),
+                          ),
+                          Container(
+                            width: 22,
+                            height: 22,
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              color: Colors.black.withValues(alpha: 0.52),
+                              border: Border.all(
+                                color: Colors.white.withValues(alpha: 0.6),
+                                width: 1,
+                              ),
+                            ),
+                            child: Icon(
+                              _isMobilePlayerOpen
+                                  ? Icons.keyboard_arrow_down_rounded
+                                  : (ctrl.isPlaying
+                                        ? Icons.graphic_eq_rounded
+                                        : Icons.play_arrow_rounded),
+                              size: 14,
+                              color: Colors.white,
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
-                    boxShadow: [
-                      BoxShadow(
-                        color: accent.withValues(alpha: _isMobilePlayerOpen ? 0.65 : 0.45),
-                        blurRadius: _isMobilePlayerOpen ? 20 : 14,
-                        spreadRadius: _isMobilePlayerOpen ? 2 : 1,
-                        offset: const Offset(0, 4),
-                      ),
-                    ],
-                    border: Border.all(
-                      color: Colors.white.withValues(alpha: _isMobilePlayerOpen ? 0.9 : 0.55),
-                      width: 2.2,
-                    ),
-                  ),
-                  child: Stack(
-                    alignment: Alignment.center,
-                    children: [
-                      SizedBox(
-                        width: 58,
-                        height: 58,
-                        child: CircularProgressIndicator(
-                          value: progress,
-                          strokeWidth: 2.2,
-                          backgroundColor: Colors.white.withValues(alpha: 0.18),
-                          valueColor: const AlwaysStoppedAnimation<Color>(Colors.white),
-                        ),
-                      ),
-                      Transform.rotate(
-                        angle: ctrl.spectrum.phase * 0.16,
-                        child: AlbumCoverAvatar(
-                          coverBytes: ctrl.currentTrack.coverBytes,
-                          colors: ctrl.activeAuroraColors,
-                          size: 48,
-                          isCircular: true,
-                        ),
-                      ),
-                      Container(
-                        width: 22,
-                        height: 22,
-                        decoration: BoxDecoration(
-                          shape: BoxShape.circle,
-                          color: Colors.black.withValues(alpha: 0.52),
-                          border: Border.all(color: Colors.white.withValues(alpha: 0.6), width: 1),
-                        ),
-                        child: Icon(
-                          _isMobilePlayerOpen
-                              ? Icons.keyboard_arrow_down_rounded
-                              : (ctrl.isPlaying
-                                    ? Icons.graphic_eq_rounded
-                                    : Icons.play_arrow_rounded),
-                          size: 14,
-                          color: Colors.white,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
+                  );
+                },
               ),
             ),
           ),
@@ -1312,13 +1336,18 @@ class _AuraMusicHomeScreenState extends State<AuraMusicHomeScreen>
                               return Row(
                                 children: [
                                   Center(
-                                    child: FluidWaveRippleVisualizer(
-                                      track: ctrl.currentTrack,
-                                      spectrum: ctrl.spectrum,
-                                      colors: ctrl.activeAuroraColors,
-                                      isPlaying: ctrl.isPlaying,
-                                      size: visSize,
-                                      onTapCenter: ctrl.togglePlayPause,
+                                    child: ValueListenableBuilder<SpectrumFrame>(
+                                      valueListenable: ctrl.spectrumNotifier,
+                                      builder: (context, liveSpectrum, _) {
+                                        return FluidWaveRippleVisualizer(
+                                          track: ctrl.currentTrack,
+                                          spectrum: liveSpectrum,
+                                          colors: ctrl.activeAuroraColors,
+                                          isPlaying: ctrl.isPlaying,
+                                          size: visSize,
+                                          onTapCenter: ctrl.togglePlayPause,
+                                        );
+                                      },
                                     ),
                                   ),
                                   const SizedBox(width: 16),
@@ -1706,8 +1735,6 @@ class _AuraMusicHomeScreenState extends State<AuraMusicHomeScreen>
     final accent = ctrl.activeAuroraColors.first;
 
     final totalMs = ctrl.duration.inMilliseconds.clamp(1, 36000000);
-    final posMs = ctrl.position.inMilliseconds.clamp(0, totalMs);
-    final progress = (posMs / totalMs).clamp(0.0, 1.0);
 
     return AuraGlassContainer(
       borderRadius: 22,
@@ -1720,36 +1747,43 @@ class _AuraMusicHomeScreenState extends State<AuraMusicHomeScreen>
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Row(
-            children: [
-              Text(
-                _formatDuration(ctrl.position),
-                style: TextStyle(fontSize: 11, fontFamily: 'monospace', color: subColor),
-              ),
-              Expanded(
-                child: SliderTheme(
-                  data: SliderTheme.of(context).copyWith(
-                    trackHeight: 3.5,
-                    thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 5.5),
-                    overlayShape: const RoundSliderOverlayShape(overlayRadius: 11),
+          ValueListenableBuilder<Duration>(
+            valueListenable: ctrl.positionNotifier,
+            builder: (context, livePos, _) {
+              final posMs = livePos.inMilliseconds.clamp(0, totalMs);
+              final progress = (posMs / totalMs).clamp(0.0, 1.0);
+              return Row(
+                children: [
+                  Text(
+                    _formatDuration(livePos),
+                    style: TextStyle(fontSize: 11, fontFamily: 'monospace', color: subColor),
                   ),
-                  child: Slider(
-                    value: progress,
-                    activeColor: accent,
-                    inactiveColor: isLight
-                        ? Colors.black.withValues(alpha: 0.12)
-                        : Colors.white.withValues(alpha: 0.16),
-                    onChanged: (v) {
-                      ctrl.seekTo(Duration(milliseconds: (v * totalMs).round()));
-                    },
+                  Expanded(
+                    child: SliderTheme(
+                      data: SliderTheme.of(context).copyWith(
+                        trackHeight: 3.5,
+                        thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 5.5),
+                        overlayShape: const RoundSliderOverlayShape(overlayRadius: 11),
+                      ),
+                      child: Slider(
+                        value: progress,
+                        activeColor: accent,
+                        inactiveColor: isLight
+                            ? Colors.black.withValues(alpha: 0.12)
+                            : Colors.white.withValues(alpha: 0.16),
+                        onChanged: (v) {
+                          ctrl.seekTo(Duration(milliseconds: (v * totalMs).round()));
+                        },
+                      ),
+                    ),
                   ),
-                ),
-              ),
-              Text(
-                _formatDuration(ctrl.duration),
-                style: TextStyle(fontSize: 11, fontFamily: 'monospace', color: subColor),
-              ),
-            ],
+                  Text(
+                    _formatDuration(ctrl.duration),
+                    style: TextStyle(fontSize: 11, fontFamily: 'monospace', color: subColor),
+                  ),
+                ],
+              );
+            },
           ),
           Row(
             children: [
@@ -1892,29 +1926,34 @@ class _AuraMusicHomeScreenState extends State<AuraMusicHomeScreen>
   }
 
   Widget _buildMiniSpectrumStrip(AudioEngineController ctrl, Color accent) {
-    final bins = ctrl.spectrum.bins;
-    return SizedBox(
-      height: 22,
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.center,
-        crossAxisAlignment: CrossAxisAlignment.end,
-        children: List.generate(bins.length, (i) {
-          final double h = (3.0 + bins[i] * 18.0).clamp(3.0, 21.0);
-          return Container(
-            width: 3.2,
-            height: h,
-            margin: const EdgeInsets.symmetric(horizontal: 1.5),
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(2),
-              color: Color.lerp(
-                ctrl.activeAuroraColors[0],
-                ctrl.activeAuroraColors[1],
-                i / bins.length,
-              )?.withValues(alpha: 0.75),
-            ),
-          );
-        }),
-      ),
+    return ValueListenableBuilder<SpectrumFrame>(
+      valueListenable: ctrl.spectrumNotifier,
+      builder: (context, liveSpectrum, _) {
+        final bins = liveSpectrum.bins;
+        return SizedBox(
+          height: 22,
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: List.generate(bins.length, (i) {
+              final double h = (3.0 + bins[i] * 18.0).clamp(3.0, 21.0);
+              return Container(
+                width: 3.2,
+                height: h,
+                margin: const EdgeInsets.symmetric(horizontal: 1.5),
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(2),
+                  color: Color.lerp(
+                    ctrl.activeAuroraColors[0],
+                    ctrl.activeAuroraColors[1],
+                    i / bins.length,
+                  )?.withValues(alpha: 0.75),
+                ),
+              );
+            }),
+          ),
+        );
+      },
     );
   }
 

@@ -1,3 +1,5 @@
+import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
 import 'package:flutter/services.dart';
@@ -7,11 +9,14 @@ import 'lrc_parser.dart';
 import 'metadata_parser.dart';
 
 /// Native IO implementation of [PlatformAudioBridge] for Windows, iOS, Android, and HarmonyOS NEXT.
+/// Includes a non-blocking background Windows Media Foundation (`System.Windows.Media.MediaPlayer`)
+/// engine so `.mp4`, `.m4a`, `.flac`, `.mp3`, `.wav`, `.aac`, `.wma` play smoothly with zero UI lag.
 class PlatformAudioBridge {
   static const MethodChannel _nativeBridge = MethodChannel('com.auramusic/native_bridge');
 
   static const Set<String> supportedExtensions = {
     '.mp3',
+    '.mp4',
     '.flac',
     '.wav',
     '.m4a',
@@ -19,6 +24,15 @@ class PlatformAudioBridge {
     '.ogg',
     '.wma',
   };
+
+  _WindowsMediaFoundationDaemon? _winDaemon;
+  bool _useWinDaemon = false;
+
+  Future<_WindowsMediaFoundationDaemon> _ensureWinDaemon() async {
+    _winDaemon ??= _WindowsMediaFoundationDaemon();
+    await _winDaemon!.ensureStarted();
+    return _winDaemon!;
+  }
 
   Future<int?> play({
     required Track track,
@@ -32,16 +46,39 @@ class PlatformAudioBridge {
       playablePath = await _ensureWavOnDisk(track.demoPresetIndex, demoWavBytes);
     }
 
-    try {
-      final res = await _nativeBridge.invokeMapMethod<String, dynamic>('play', {
-        'path': playablePath,
-        'positionMs': positionMs,
-        'volume': volume,
-      });
-      if (res != null && res['durationMs'] is int && (res['durationMs'] as int) > 500) {
-        return res['durationMs'] as int;
+    if (!_useWinDaemon) {
+      try {
+        final res = await _nativeBridge.invokeMapMethod<String, dynamic>('play', {
+          'path': playablePath,
+          'positionMs': positionMs,
+          'volume': volume,
+          'speed': speed,
+        });
+        if (res != null) {
+          final dur = res['durationMs'] as int?;
+          final ok = (res['ok'] as bool?) ?? true;
+          if (ok) {
+            return (dur != null && dur > 500) ? dur : null;
+          }
+        }
+      } catch (_) {
+        // When running locally without C++ runner or if native channel fails, switch to Windows MF Daemon
+        if (Platform.isWindows) {
+          _useWinDaemon = true;
+        }
       }
-    } catch (_) {}
+    }
+
+    if (Platform.isWindows) {
+      _useWinDaemon = true;
+      final daemon = await _ensureWinDaemon();
+      return daemon.play(
+        path: playablePath,
+        positionMs: positionMs,
+        volume: volume,
+        speed: speed,
+      );
+    }
     return null;
   }
 
@@ -60,32 +97,62 @@ class PlatformAudioBridge {
   }
 
   Future<void> pause() async {
+    if (_useWinDaemon && Platform.isWindows) {
+      _winDaemon?.pause();
+      return;
+    }
     try {
       await _nativeBridge.invokeMethod<void>('pause');
     } catch (_) {}
   }
 
   Future<void> stop() async {
+    if (_useWinDaemon && Platform.isWindows) {
+      _winDaemon?.stop();
+      return;
+    }
     try {
       await _nativeBridge.invokeMethod<void>('stop');
     } catch (_) {}
   }
 
   Future<void> seek(int positionMs) async {
+    if (_useWinDaemon && Platform.isWindows) {
+      _winDaemon?.seek(positionMs);
+      return;
+    }
     try {
       await _nativeBridge.invokeMethod<void>('seek', {'positionMs': positionMs});
     } catch (_) {}
   }
 
   Future<void> setVolume(double volume) async {
+    if (_useWinDaemon && Platform.isWindows) {
+      _winDaemon?.setVolume(volume);
+      return;
+    }
     try {
       await _nativeBridge.invokeMethod<void>('setVolume', {'volume': volume});
     } catch (_) {}
   }
 
-  Future<void> setSpeed(double speed) async {}
+  Future<void> setSpeed(double speed) async {
+    if (_useWinDaemon && Platform.isWindows) {
+      _winDaemon?.setSpeed(speed);
+      return;
+    }
+    try {
+      await _nativeBridge.invokeMethod<void>('setSpeed', {'speed': speed});
+    } catch (_) {}
+  }
 
   Future<Map<String, int>?> getPositionAndDuration() async {
+    if (_useWinDaemon && Platform.isWindows && _winDaemon != null) {
+      return {
+        'positionMs': _winDaemon!.latestPositionMs,
+        'durationMs': _winDaemon!.latestDurationMs,
+      };
+    }
     try {
       final res = await _nativeBridge.invokeMapMethod<String, dynamic>('getPosition');
       if (res != null) {
@@ -187,12 +254,25 @@ class PlatformAudioBridge {
         final raf = await file.open(mode: FileMode.read);
         try {
           headerBytes = await raf.read(maxRead);
+          // For .mp4 / .m4a files whose 'moov'/'mvhd' atom is placed at the end of the file,
+          // also read the trailing 256 KB if 'mvhd' wasn't found in the first 512 KB!
+          final ext = p.extension(fileName).toLowerCase();
+          if ((ext == '.mp4' || ext == '.m4a') &&
+              fileSize > 512 * 1024 &&
+              !_containsMvhd(headerBytes)) {
+            final tailSize = math.min(256 * 1024, fileSize - maxRead);
+            await raf.setPosition(fileSize - tailSize);
+            final tailBytes = await raf.read(tailSize);
+            final combined = Uint8List(headerBytes.length + tailBytes.length);
+            combined.setRange(0, headerBytes.length, headerBytes);
+            combined.setRange(headerBytes.length, combined.length, tailBytes);
+            headerBytes = combined;
+          }
         } finally {
           await raf.close();
         }
       }
 
-      // Check for companion .lrc file alongside audio file
       final baseName = p.basenameWithoutExtension(filePath);
       final lrcFile = File(p.join(folderPath, '$baseName.lrc'));
       if (await lrcFile.exists()) {
@@ -211,6 +291,18 @@ class PlatformAudioBridge {
       companionLyrics: companionLyrics,
       indexSeed: indexSeed,
     );
+  }
+
+  static bool _containsMvhd(Uint8List bytes) {
+    for (int i = 0; i + 4 < bytes.length; i++) {
+      if (bytes[i] == 0x6D &&
+          bytes[i + 1] == 0x76 &&
+          bytes[i + 2] == 0x68 &&
+          bytes[i + 3] == 0x64) {
+        return true;
+      }
+    }
+    return false;
   }
 
   List<String> _getDefaultMusicDirectories() {
@@ -278,5 +370,171 @@ class PlatformAudioBridge {
     } catch (_) {}
   }
 
-  void dispose() {}
+  void dispose() {
+    _winDaemon?.dispose();
+    _winDaemon = null;
+  }
+}
+
+/// Persistent background Windows Media Foundation (`System.Windows.Media.MediaPlayer`) daemon.
+/// Runs in its own process with a WPF Dispatcher pump so `.mp4`, `.m4a`, `.flac`, `.mp3`, `.wav`
+/// play with hardware-accelerated audio and zero Flutter UI thread blocking.
+class _WindowsMediaFoundationDaemon {
+  Process? _process;
+  int latestPositionMs = -1;
+  int latestDurationMs = -1;
+  String? _currentPath;
+  bool _isStarting = false;
+
+  static const String _psScript = r'''
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName presentationCore
+$player = New-Object System.Windows.Media.MediaPlayer
+$isPlaying = $false
+$currentFile = ""
+[Console]::InputEncoding = [System.Text.Encoding]::UTF8
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+
+$reader = [Console]::In
+$pendingTask = $reader.ReadLineAsync()
+
+while ($true) {
+  [System.Windows.Forms.Application]::DoEvents()
+  [System.Windows.Threading.Dispatcher]::CurrentDispatcher.Invoke([Action]{}, [System.Windows.Threading.DispatcherPriority]::Background)
+
+  if ($pendingTask.IsCompleted) {
+    $line = $pendingTask.Result
+    if ($null -eq $line) { break }
+    $parts = $line.Split('|')
+    $cmd = $parts[0]
+    try {
+      if ($cmd -eq 'PLAY') {
+        $b64 = $parts[1]
+        $posMs = [double]::Parse($parts[2])
+        $vol = [double]::Parse($parts[3])
+        $spd = [double]::Parse($parts[4])
+        $path = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($b64))
+        if ($currentFile -ne $path) {
+          $player.Open([Uri]::new($path))
+          $currentFile = $path
+        }
+        $player.Volume = $vol
+        $player.SpeedRatio = $spd
+        if ($posMs -gt 50) {
+          $player.Position = [TimeSpan]::FromMilliseconds($posMs)
+        }
+        $player.Play()
+        $isPlaying = $true
+      } elseif ($cmd -eq 'PAUSE') {
+        $player.Pause()
+        $isPlaying = $false
+      } elseif ($cmd -eq 'STOP') {
+        $player.Stop()
+        $isPlaying = $false
+      } elseif ($cmd -eq 'SEEK') {
+        $posMs = [double]::Parse($parts[1])
+        $player.Position = [TimeSpan]::FromMilliseconds($posMs)
+      } elseif ($cmd -eq 'VOL') {
+        $player.Volume = [double]::Parse($parts[1])
+      } elseif ($cmd -eq 'SPEED') {
+        $player.SpeedRatio = [double]::Parse($parts[1])
+      } elseif ($cmd -eq 'QUIT') {
+        break
+      }
+    } catch {}
+    $pendingTask = $reader.ReadLineAsync()
+  }
+
+  if ($isPlaying) {
+    try {
+      $pMs = [int]$player.Position.TotalMilliseconds
+      $dMs = -1
+      if ($player.NaturalDuration.HasTimeSpan) {
+        $dMs = [int]$player.NaturalDuration.TimeSpan.TotalMilliseconds
+      }
+      [Console]::Out.WriteLine("POS|$pMs|$dMs")
+      [Console]::Out.Flush()
+    } catch {}
+  }
+  Start-Sleep -Milliseconds 60
+}
+$player.Close()
+''';
+
+  Future<void> ensureStarted() async {
+    if (_process != null || _isStarting) return;
+    _isStarting = true;
+    try {
+      _process = await Process.start(
+        'powershell.exe',
+        ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-Command', _psScript],
+      );
+      _process!.stdout
+          .transform(utf8.decoder)
+          .transform(const LineSplitter())
+          .listen((line) {
+            if (line.startsWith('POS|')) {
+              final parts = line.split('|');
+              if (parts.length >= 3) {
+                latestPositionMs = int.tryParse(parts[1]) ?? latestPositionMs;
+                final dur = int.tryParse(parts[2]) ?? -1;
+                if (dur > 500) latestDurationMs = dur;
+              }
+            }
+          });
+    } catch (_) {
+    } finally {
+      _isStarting = false;
+    }
+  }
+
+  Future<int?> play({
+    required String path,
+    required int positionMs,
+    required double volume,
+    required double speed,
+  }) async {
+    await ensureStarted();
+    final proc = _process;
+    if (proc == null) return null;
+
+    if (_currentPath != path) {
+      latestDurationMs = -1;
+      _currentPath = path;
+    }
+    latestPositionMs = positionMs;
+    final b64 = base64Encode(utf8.encode(path));
+    proc.stdin.writeln('PLAY|$b64|$positionMs|${volume.toStringAsFixed(3)}|${speed.toStringAsFixed(2)}');
+    return latestDurationMs > 500 ? latestDurationMs : null;
+  }
+
+  void pause() {
+    _process?.stdin.writeln('PAUSE');
+  }
+
+  void stop() {
+    _process?.stdin.writeln('STOP');
+    latestPositionMs = 0;
+  }
+
+  void seek(int positionMs) {
+    latestPositionMs = positionMs;
+    _process?.stdin.writeln('SEEK|$positionMs');
+  }
+
+  void setVolume(double volume) {
+    _process?.stdin.writeln('VOL|${volume.toStringAsFixed(3)}');
+  }
+
+  void setSpeed(double speed) {
+    _process?.stdin.writeln('SPEED|${speed.toStringAsFixed(2)}');
+  }
+
+  void dispose() {
+    try {
+      _process?.stdin.writeln('QUIT');
+      _process?.kill();
+    } catch (_) {}
+    _process = null;
+  }
 }

@@ -1,12 +1,43 @@
+import 'dart:io';
+import 'dart:typed_data';
 import 'package:flutter_music/main.dart';
 import 'package:flutter_music/models/track.dart';
 import 'package:flutter_music/services/audio_engine_service.dart';
 import 'package:flutter_music/services/demo_wav_generator.dart';
 import 'package:flutter_music/services/lrc_parser.dart';
+import 'package:flutter_music/services/metadata_parser.dart';
 import 'package:flutter_music/services/spectrum_analyzer.dart';
 import 'package:flutter_music/widgets/fluid_wave_visualizer.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
+import 'package:path/path.dart' as p;
+
+/// Builds a valid ISO Base Media (.mp4) header with `ftyp` and `moov`/`mvhd` boxes
+/// encoding [durationSeconds] at [timescale].
+Uint8List buildTestMp4Header({int timescale = 48000, int durationSeconds = 185}) {
+  final buffer = Uint8List(128);
+  final bd = ByteData.sublistView(buffer);
+
+  // ftyp box (24 bytes)
+  bd.setUint32(0, 24, Endian.big);
+  buffer.setRange(4, 8, 'ftyp'.codeUnits);
+  buffer.setRange(8, 12, 'mp42'.codeUnits);
+
+  // moov box header at offset 24 (64 bytes)
+  bd.setUint32(24, 64, Endian.big);
+  buffer.setRange(28, 32, 'moov'.codeUnits);
+
+  // mvhd box at offset 32 (version 0)
+  bd.setUint32(32, 56, Endian.big);
+  buffer.setRange(36, 40, 'mvhd'.codeUnits);
+  buffer[40] = 0; // version 0
+  // timescale at offset 36 + 16 = 52
+  bd.setUint32(52, timescale, Endian.big);
+  // duration at offset 36 + 20 = 56
+  bd.setUint32(56, timescale * durationSeconds, Endian.big);
+
+  return buffer;
+}
 
 void main() {
   test('LrcParser accurately parses timestamps and bilingual lyric lines', () {
@@ -21,6 +52,68 @@ void main() {
     expect(lines[0].text, '穿过城市夜色与全息毛玻璃微光');
     expect(lines[0].translation, 'Through city nightscapes and holographic frosted light');
     expect(lines[1].timestamp, const Duration(milliseconds: 4500));
+  });
+
+  test('AudioMetadataParser & LocalMusicScanner support .mp4 files and parse mvhd duration', () async {
+    final mp4Header = buildTestMp4Header(timescale: 48000, durationSeconds: 185);
+    final track = AudioMetadataParser.parseBytes(
+      id: 'test_song.mp4',
+      filePath: r'C:\Music\周杰伦 - 晴天.mp4',
+      fileName: '周杰伦 - 晴天.mp4',
+      folderPath: r'C:\Music',
+      fileSize: 5920000,
+      headerBytes: mp4Header,
+    );
+
+    expect(track.artist, '周杰伦');
+    expect(track.title, '晴天');
+    expect(track.duration, const Duration(seconds: 185));
+    expect(track.formattedDuration, '03:05');
+    expect(track.formatBadge, contains('MP4'));
+
+    // Also test scanning a real temporary directory containing an .mp4 file
+    final tempDir = await Directory.systemTemp.createTemp('auramusic_mp4_test_');
+    addTearDown(() async {
+      if (await tempDir.exists()) {
+        await tempDir.delete(recursive: true);
+      }
+    });
+
+    final mp4File = File(p.join(tempDir.path, 'Aether - Aurora Live.mp4'));
+    await mp4File.writeAsBytes(mp4Header, flush: true);
+
+    final controller = AudioEngineController();
+    addTearDown(controller.dispose);
+
+    final addedCount = await controller.scanCustomDirectory(tempDir.path);
+    expect(addedCount, 1);
+    expect(controller.allTracks.any((t) => t.title == 'Aurora Live'), isTrue);
+  });
+
+  test('60FPS spectrumNotifier updates without triggering full-app rebuild stutter', () async {
+    final controller = AudioEngineController();
+    addTearDown(controller.dispose);
+
+    // Wait for initial default folder scan to settle
+    while (controller.isScanning) {
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 40));
+
+    int fullTreeRebuildCount = 0;
+    int spectrumFrameCount = 0;
+
+    controller.addListener(() {
+      fullTreeRebuildCount++;
+    });
+    controller.spectrumNotifier.addListener(() {
+      spectrumFrameCount++;
+    });
+
+    await Future<void>.delayed(const Duration(milliseconds: 220));
+    // Spectrum notifier ticks at 60FPS while full-tree rebuilds stay 0!
+    expect(spectrumFrameCount, greaterThanOrEqualTo(5));
+    expect(fullTreeRebuildCount, 0);
   });
 
   test('DemoWavGenerator & SpectrumAnalyzer compute valid 32-band FFT spectrum frames', () async {
@@ -83,7 +176,6 @@ void main() {
     await tester.pumpWidget(AuraMusicApp(controller: controller));
     await tester.pump(const Duration(milliseconds: 50));
 
-    // Verify bottom tabs: 首页, 本地歌曲, 资料库, 我的 + raised circular player button
     expect(find.text('首页'), findsOneWidget);
     expect(find.text('本地歌曲'), findsWidgets);
     expect(find.text('资料库'), findsOneWidget);
@@ -91,19 +183,15 @@ void main() {
     final circularPlayerBtn = find.byKey(const ValueKey('raised_circular_player_tab_button'));
     expect(circularPlayerBtn, findsOneWidget);
 
-    // Initially Player Main View is closed (hidden by wave ripple transition)
     expect(find.byType(FluidWaveRippleVisualizer), findsNothing);
 
-    // Tap raised circular player button -> expands wave ripple from click point to full Player Main View
     await tester.tap(circularPlayerBtn);
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
-    // Mid-transition: visualizer is already being revealed inside ClipPath
     expect(find.byType(FluidWaveRippleVisualizer), findsOneWidget);
     await tester.pump(const Duration(milliseconds: 400));
     expect(find.byType(FluidWaveRippleVisualizer), findsOneWidget);
 
-    // Tap raised circular player button again -> contracts wave ripple back into circular button
     await tester.tap(circularPlayerBtn);
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 550));

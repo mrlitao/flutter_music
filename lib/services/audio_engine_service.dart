@@ -26,6 +26,8 @@ class AudioEngineController extends ChangeNotifier {
   bool _isPlaying = false;
   bool _isScanning = false;
   bool _isDisposed = false;
+  bool _isSyncingPosition = false;
+  int _lastNotifiedLyricIndex = 0;
   Duration _position = Duration.zero;
   Duration _duration = const Duration(seconds: 24);
   double _volume = 0.82;
@@ -52,6 +54,13 @@ class AudioEngineController extends ChangeNotifier {
   ];
 
   SpectrumFrame _currentSpectrum = SpectrumFrame.idle();
+
+  /// Dedicated high-frequency notifiers so 60FPS wave visualizer & progress slider update
+  /// without rebuilding the entire MaterialApp, BackdropFilter layers, or song ListView!
+  final ValueNotifier<SpectrumFrame> spectrumNotifier =
+      ValueNotifier<SpectrumFrame>(SpectrumFrame.idle());
+  final ValueNotifier<Duration> positionNotifier =
+      ValueNotifier<Duration>(Duration.zero);
 
   // Getters
   List<Track> get allTracks => _tracks;
@@ -181,8 +190,8 @@ class AudioEngineController extends ChangeNotifier {
       _onFrameTick();
     });
 
-    // Sync actual playback position every 200ms
-    _positionSyncTimer = Timer.periodic(const Duration(milliseconds: 200), (_) {
+    // Sync actual playback position every 400ms (non-blocking)
+    _positionSyncTimer = Timer.periodic(const Duration(milliseconds: 400), (_) {
       _syncNativePosition();
     });
 
@@ -197,6 +206,7 @@ class AudioEngineController extends ChangeNotifier {
   }
 
   void _onFrameTick() {
+    if (_isDisposed) return;
     if (_isPlaying) {
       _position += Duration(milliseconds: (16 * _playbackSpeed).round());
       final totalDur = duration;
@@ -204,6 +214,7 @@ class AudioEngineController extends ChangeNotifier {
         _handleTrackCompleted();
         return;
       }
+      positionNotifier.value = _position;
     }
 
     final liveWebBins = _bridge.getRealtimeFrequencyBins();
@@ -216,26 +227,39 @@ class AudioEngineController extends ChangeNotifier {
       intensity: _waveIntensity,
       webAudioBins: liveWebBins,
     );
-    notifyListeners();
+    spectrumNotifier.value = _currentSpectrum;
+
+    // Only notify full-tree listeners when the active synchronized lyric line changes!
+    final curLyricIdx = activeLyricIndex;
+    if (curLyricIdx != _lastNotifiedLyricIndex) {
+      _lastNotifiedLyricIndex = curLyricIdx;
+      notifyListeners();
+    }
   }
 
   Future<void> _syncNativePosition() async {
-    if (!_isPlaying) return;
+    if (!_isPlaying || _isSyncingPosition || _isDisposed) return;
+    _isSyncingPosition = true;
     try {
       final res = await _bridge.getPositionAndDuration();
-      if (res != null) {
+      if (res != null && !_isDisposed) {
         final posMs = res['positionMs'];
         final lenMs = res['durationMs'];
-        if (lenMs != null && lenMs > 1000) {
+        if (lenMs != null && lenMs > 1000 && (lenMs - _duration.inMilliseconds).abs() > 500) {
           _duration = Duration(milliseconds: lenMs);
+          notifyListeners();
         }
-        if (posMs != null && posMs >= 0) {
-          if ((posMs - _position.inMilliseconds).abs() > 350) {
+        if (posMs != null && posMs > 0) {
+          if ((posMs - _position.inMilliseconds).abs() > 600) {
             _position = Duration(milliseconds: posMs);
+            positionNotifier.value = _position;
           }
         }
       }
-    } catch (_) {}
+    } catch (_) {
+    } finally {
+      _isSyncingPosition = false;
+    }
   }
 
   void _handleTrackCompleted() {
@@ -372,6 +396,8 @@ class AudioEngineController extends ChangeNotifier {
     if (_tracks.isEmpty) return;
     _currentIndex = index.clamp(0, _tracks.length - 1);
     _position = Duration.zero;
+    positionNotifier.value = Duration.zero;
+    _lastNotifiedLyricIndex = 0;
     _duration = currentTrack.duration;
     if (autoPlay) {
       final t = _tracks[_currentIndex];
@@ -457,6 +483,8 @@ class AudioEngineController extends ChangeNotifier {
   Future<void> seekTo(Duration target) async {
     final clampedMs = target.inMilliseconds.clamp(0, duration.inMilliseconds);
     _position = Duration(milliseconds: clampedMs);
+    positionNotifier.value = _position;
+    _lastNotifiedLyricIndex = activeLyricIndex;
     await _bridge.seek(clampedMs);
     notifyListeners();
   }
@@ -616,6 +644,8 @@ class AudioEngineController extends ChangeNotifier {
     _frameTimer?.cancel();
     _positionSyncTimer?.cancel();
     _sleepTimer?.cancel();
+    spectrumNotifier.dispose();
+    positionNotifier.dispose();
     _bridge.dispose();
     super.dispose();
   }
