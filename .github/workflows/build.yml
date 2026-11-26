@@ -147,6 +147,16 @@ jobs:
           if [ ! -d "macos" ]; then
             flutter create . --platforms=macos --project-name=flutter_music
           fi
+          # Inject custom AuraMusic AppIcon PNGs
+          cp -f assets/macos_icons/*.png macos/Runner/Assets.xcassets/AppIcon.appiconset/
+          # Inject native AVPlayer + NSOpenPanel bridge & 360x600 min window size
+          cp -f assets/macos_bridge/MainFlutterWindow.swift macos/Runner/MainFlutterWindow.swift
+          # Ensure user-selected file read access & disable strict sandbox blocking local Music folder scans
+          for ent in macos/Runner/DebugProfile.entitlements macos/Runner/Release.entitlements; do
+            if [ -f "$ent" ]; then
+              /usr/libexec/PlistBuddy -c "Set :com.apple.security.app-sandbox false" "$ent" 2>/dev/null || true
+            fi
+          done
 
       - name: Install dependencies
         run: flutter pub get
