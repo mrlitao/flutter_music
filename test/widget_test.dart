@@ -86,6 +86,10 @@ void main() {
     final controller = AudioEngineController();
     addTearDown(controller.dispose);
 
+    while (controller.isScanning) {
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+    }
+
     final addedCount = await controller.scanCustomDirectory(tempDir.path);
     expect(addedCount, 1);
     expect(controller.allTracks.any((t) => t.title == 'Aurora Live'), isTrue);
@@ -95,15 +99,47 @@ void main() {
     await controller.deleteTrack(importedTrack.id);
     expect(controller.allTracks.any((t) => t.title == 'Aurora Live'), isFalse);
 
-    // Test playlist & previous/next order
-    final firstId = controller.playlist.first.id;
+    // Test playlist & previous/next order + toggleInPlaylist removal
+    final firstTrack = controller.playlist.first;
+    final firstId = firstTrack.id;
     final secondId = controller.playlist[1].id;
-    await controller.selectTrack(controller.playlist.first, autoPlay: true);
+    await controller.selectTrack(firstTrack, autoPlay: true);
     expect(controller.currentTrack.id, firstId);
     await controller.nextTrack();
     expect(controller.currentTrack.id, secondId);
     await controller.previousTrack();
     expect(controller.currentTrack.id, firstId);
+
+    // Toggle removes from playlist when already present, then adds back
+    expect(controller.isInPlaylist(firstId), isTrue);
+    controller.toggleInPlaylist(firstTrack);
+    expect(controller.isInPlaylist(firstId), isFalse);
+    controller.toggleInPlaylist(firstTrack);
+    expect(controller.isInPlaylist(firstId), isTrue);
+
+    // Removing the currently playing track from playlist immediately plays the next track
+    await controller.selectTrack(controller.playlist.first, autoPlay: true);
+    final playingBeforeRemove = controller.currentTrack.id;
+    final expectedNextId = controller.playlist[1].id;
+    await controller.removeFromPlaylist(playingBeforeRemove);
+    expect(controller.currentTrack.id, expectedNextId);
+    expect(controller.isPlaying, isTrue);
+
+    // Removing tracks until only 1 remains, then next/prev restarts that 1 track from 0
+    while (controller.playlist.length > 1) {
+      await controller.removeFromPlaylist(controller.playlist.last.id);
+    }
+    expect(controller.playlist.length, 1);
+    await controller.seekTo(const Duration(seconds: 8));
+    expect(controller.position, const Duration(seconds: 8));
+    await controller.nextTrack();
+    expect(controller.position, Duration.zero);
+    expect(controller.isPlaying, isTrue);
+
+    // Removing the last remaining track stops playback
+    await controller.removeFromPlaylist(controller.playlist.first.id);
+    expect(controller.playlist, isEmpty);
+    expect(controller.isPlaying, isFalse);
 
     // Test toggleMute mutes and restores previous volume
     await controller.setVolume(0.65);

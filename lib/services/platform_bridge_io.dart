@@ -457,6 +457,7 @@ class _WindowsMediaFoundationDaemon {
   int latestDurationMs = -1;
   String? _currentPath;
   bool _isStarting = false;
+  bool _isDisposed = false;
 
   static const String _psScript = r'''
 Add-Type -AssemblyName System.Windows.Forms
@@ -492,9 +493,7 @@ while ($true) {
         }
         $player.Volume = $vol
         $player.SpeedRatio = $spd
-        if ($posMs -gt 50) {
-          $player.Position = [TimeSpan]::FromMilliseconds($posMs)
-        }
+        $player.Position = [TimeSpan]::FromMilliseconds($posMs)
         $player.Play()
         $isPlaying = $true
       } elseif ($cmd -eq 'PAUSE') {
@@ -534,14 +533,20 @@ $player.Close()
 ''';
 
   Future<void> ensureStarted() async {
-    if (_process != null || _isStarting) return;
+    if (_process != null || _isStarting || _isDisposed) return;
     _isStarting = true;
     try {
-      _process = await Process.start(
+      final proc = await Process.start(
         'powershell.exe',
         ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-Command', _psScript],
       );
-      _process!.stdout
+      if (_isDisposed) {
+        proc.kill();
+        return;
+      }
+      _process = proc;
+      proc.stdin.done.catchError((_) {});
+      proc.stdout
           .transform(utf8.decoder)
           .transform(const LineSplitter())
           .listen((line) {
@@ -560,6 +565,13 @@ $player.Close()
     }
   }
 
+  void _sendCommand(String line) {
+    if (_isDisposed) return;
+    try {
+      _process?.stdin.writeln(line);
+    } catch (_) {}
+  }
+
   Future<int?> play({
     required String path,
     required int positionMs,
@@ -567,8 +579,7 @@ $player.Close()
     required double speed,
   }) async {
     await ensureStarted();
-    final proc = _process;
-    if (proc == null) return null;
+    if (_isDisposed || _process == null) return null;
 
     if (_currentPath != path) {
       latestDurationMs = -1;
@@ -576,33 +587,28 @@ $player.Close()
     }
     latestPositionMs = positionMs;
     final b64 = base64Encode(utf8.encode(path));
-    proc.stdin.writeln('PLAY|$b64|$positionMs|${volume.toStringAsFixed(3)}|${speed.toStringAsFixed(2)}');
+    _sendCommand('PLAY|$b64|$positionMs|${volume.toStringAsFixed(3)}|${speed.toStringAsFixed(2)}');
     return latestDurationMs > 500 ? latestDurationMs : null;
   }
 
-  void pause() {
-    _process?.stdin.writeln('PAUSE');
-  }
+  void pause() => _sendCommand('PAUSE');
 
   void stop() {
-    _process?.stdin.writeln('STOP');
+    _sendCommand('STOP');
     latestPositionMs = 0;
   }
 
   void seek(int positionMs) {
     latestPositionMs = positionMs;
-    _process?.stdin.writeln('SEEK|$positionMs');
+    _sendCommand('SEEK|$positionMs');
   }
 
-  void setVolume(double volume) {
-    _process?.stdin.writeln('VOL|${volume.toStringAsFixed(3)}');
-  }
+  void setVolume(double volume) => _sendCommand('VOL|${volume.toStringAsFixed(3)}');
 
-  void setSpeed(double speed) {
-    _process?.stdin.writeln('SPEED|${speed.toStringAsFixed(2)}');
-  }
+  void setSpeed(double speed) => _sendCommand('SPEED|${speed.toStringAsFixed(2)}');
 
   void dispose() {
+    _isDisposed = true;
     try {
       _process?.stdin.writeln('QUIT');
       _process?.kill();

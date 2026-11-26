@@ -14,13 +14,7 @@ class ImportLocalMusicSheet extends StatefulWidget {
 }
 
 class _ImportLocalMusicSheetState extends State<ImportLocalMusicSheet> {
-  final TextEditingController _pathController = TextEditingController();
-
-  @override
-  void dispose() {
-    _pathController.dispose();
-    super.dispose();
-  }
+  String _importFeedback = '请选择本机音乐文件夹或音频文件进行导入';
 
   @override
   Widget build(BuildContext context) {
@@ -55,7 +49,7 @@ class _ImportLocalMusicSheetState extends State<ImportLocalMusicSheet> {
                     const SizedBox(width: 10),
                     Expanded(
                       child: Text(
-                        '导入本机音乐资源 (Windows / iOS / Android / 鸿蒙)',
+                        '导入本机音乐资源',
                         style: TextStyle(
                           fontSize: 16,
                           fontWeight: FontWeight.w700,
@@ -76,7 +70,7 @@ class _ImportLocalMusicSheetState extends State<ImportLocalMusicSheet> {
                 ),
                 const SizedBox(height: 16),
 
-                // Quick Native Action Buttons
+                // Import Action Buttons
                 Wrap(
                   spacing: 10,
                   runSpacing: 10,
@@ -89,7 +83,15 @@ class _ImportLocalMusicSheetState extends State<ImportLocalMusicSheet> {
                       onTap: ctrl.isScanning
                           ? null
                           : () async {
-                              await ctrl.pickAndScanFolder();
+                              setState(() => _importFeedback = '正在扫描所选文件夹...');
+                              final count = await ctrl.pickAndScanFolder();
+                              if (mounted) {
+                                setState(() {
+                                  _importFeedback = count > 0
+                                      ? '已成功导入 $count 首本地音乐'
+                                      : '未选择新的音频文件';
+                                });
+                              }
                             },
                     ),
                     _buildActionButton(
@@ -100,72 +102,16 @@ class _ImportLocalMusicSheetState extends State<ImportLocalMusicSheet> {
                       onTap: ctrl.isScanning
                           ? null
                           : () async {
-                              await ctrl.pickAndImportAudioFiles();
-                            },
-                    ),
-                    _buildActionButton(
-                      icon: Icons.sync_rounded,
-                      label: '扫描系统默认音乐库',
-                      accent: ctrl.activeAuroraColors[2],
-                      isLight: isLight,
-                      onTap: ctrl.isScanning
-                          ? null
-                          : () async {
-                              await ctrl.scanDefaultSystemMusicFolders();
-                            },
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 16),
-
-                // Manual Directory Input Row
-                Row(
-                  children: [
-                    Expanded(
-                      child: TextField(
-                        controller: _pathController,
-                        style: TextStyle(color: textColor, fontSize: 13),
-                        decoration: InputDecoration(
-                          isDense: true,
-                          hintText: r'或输入本机音乐目录路径 (例如 C:\Users\Music 或 /sdcard/Music)',
-                          hintStyle: TextStyle(color: subColor.withValues(alpha: 0.5), fontSize: 12),
-                          filled: true,
-                          fillColor: isLight
-                              ? Colors.black.withValues(alpha: 0.05)
-                              : Colors.white.withValues(alpha: 0.08),
-                          border: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(12),
-                            borderSide: BorderSide.none,
-                          ),
-                          contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 10),
-                    FilledButton.icon(
-                      style: FilledButton.styleFrom(
-                        backgroundColor: accent,
-                        foregroundColor: Colors.black87,
-                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                      ),
-                      onPressed: ctrl.isScanning
-                          ? null
-                          : () async {
-                              final input = _pathController.text.trim();
-                              if (input.isNotEmpty) {
-                                await ctrl.scanCustomDirectory(input);
+                              setState(() => _importFeedback = '正在解析所选音频文件...');
+                              final count = await ctrl.pickAndImportAudioFiles();
+                              if (mounted) {
+                                setState(() {
+                                  _importFeedback = count > 0
+                                      ? '已成功导入 $count 首本地音乐'
+                                      : '未选择新的音频文件';
+                                });
                               }
                             },
-                      icon: const Icon(Icons.search_rounded, size: 17, color: Colors.black87),
-                      label: const Text(
-                        '扫描路径',
-                        style: TextStyle(
-                          fontSize: 12.5,
-                          fontWeight: FontWeight.w700,
-                          color: Colors.black87,
-                        ),
-                      ),
                     ),
                   ],
                 ),
@@ -184,7 +130,7 @@ class _ImportLocalMusicSheetState extends State<ImportLocalMusicSheet> {
                       ),
                     Expanded(
                       child: Text(
-                        ctrl.statusMessage,
+                        ctrl.isScanning ? '正在处理本机音频资源...' : _importFeedback,
                         style: TextStyle(fontSize: 12, color: accent, fontWeight: FontWeight.w500),
                       ),
                     ),
@@ -425,6 +371,170 @@ class EqualizerAndWaveSheet extends StatelessWidget {
                   ],
                 ),
               ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+/// Modal sheet displaying the active Playing Queue (正在播放列表), supporting click-to-play and removal.
+class PlayingQueueSheet extends StatelessWidget {
+  const PlayingQueueSheet({super.key, required this.controller});
+
+  final AudioEngineController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    return ListenableBuilder(
+      listenable: controller,
+      builder: (context, _) {
+        final ctrl = controller;
+        final isLight = ctrl.isLightGlassMode;
+        final textColor = isLight ? const Color(0xFF0F172A) : Colors.white;
+        final subColor = isLight ? Colors.black54 : Colors.white70;
+        final accent = ctrl.activeAuroraColors.first;
+        final queue = ctrl.playlist;
+
+        return Padding(
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 20),
+          child: AuraGlassContainer(
+            borderRadius: 24,
+            blurSigma: 28,
+            isLightMode: isLight,
+            padding: const EdgeInsets.all(18),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 420),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Icon(Icons.queue_music_rounded, color: accent, size: 22),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          '正在播放列表 (${queue.length} 首)',
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w700,
+                            color: textColor,
+                          ),
+                        ),
+                      ),
+                      IconButton(
+                        onPressed: () => Navigator.of(context).pop(),
+                        icon: Icon(Icons.close_rounded, color: subColor, size: 20),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  if (queue.isEmpty)
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 32),
+                      child: Center(
+                        child: Text(
+                          '播放列表为空，请从本地歌曲中添加',
+                          style: TextStyle(fontSize: 13, color: subColor),
+                        ),
+                      ),
+                    )
+                  else
+                    Flexible(
+                      child: ListView.separated(
+                        shrinkWrap: true,
+                        itemCount: queue.length,
+                        separatorBuilder: (_, _) => const SizedBox(height: 6),
+                        itemBuilder: (context, index) {
+                          final track = queue[index];
+                          final isCurrent = track.id == ctrl.currentTrack.id;
+                          return InkWell(
+                            borderRadius: BorderRadius.circular(12),
+                            onTap: () => ctrl.selectTrack(track, autoPlay: true),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                              decoration: BoxDecoration(
+                                borderRadius: BorderRadius.circular(12),
+                                color: isCurrent
+                                    ? accent.withValues(alpha: isLight ? 0.16 : 0.20)
+                                    : Colors.white.withValues(alpha: isLight ? 0.3 : 0.05),
+                                border: Border.all(
+                                  color: isCurrent
+                                      ? accent.withValues(alpha: 0.5)
+                                      : Colors.white.withValues(alpha: 0.08),
+                                ),
+                              ),
+                              child: Row(
+                                children: [
+                                  AlbumCoverAvatar(
+                                    coverBytes: track.coverBytes,
+                                    colors: track.paletteColors,
+                                    size: 36,
+                                    borderRadius: 8,
+                                  ),
+                                  const SizedBox(width: 10),
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        Row(
+                                          children: [
+                                            if (isCurrent)
+                                              Padding(
+                                                padding: const EdgeInsets.only(right: 5),
+                                                child: Icon(
+                                                  ctrl.isPlaying
+                                                      ? Icons.graphic_eq_rounded
+                                                      : Icons.pause_circle_filled_rounded,
+                                                  size: 14,
+                                                  color: accent,
+                                                ),
+                                              ),
+                                            Expanded(
+                                              child: Text(
+                                                track.title,
+                                                maxLines: 1,
+                                                overflow: TextOverflow.ellipsis,
+                                                style: TextStyle(
+                                                  fontSize: 13,
+                                                  fontWeight:
+                                                      isCurrent ? FontWeight.w700 : FontWeight.w600,
+                                                  color: isCurrent ? accent : textColor,
+                                                ),
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                        Text(
+                                          '${track.artist} · ${track.formattedDuration}',
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: TextStyle(fontSize: 11, color: subColor),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                  IconButton(
+                                    tooltip: '从播放列表移除',
+                                    visualDensity: VisualDensity.compact,
+                                    onPressed: () => ctrl.removeFromPlaylist(track.id),
+                                    icon: Icon(
+                                      Icons.close_rounded,
+                                      size: 17,
+                                      color: subColor,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                ],
+              ),
             ),
           ),
         );

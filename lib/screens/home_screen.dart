@@ -133,6 +133,15 @@ class _AuraMusicHomeScreenState extends State<AuraMusicHomeScreen>
     );
   }
 
+  void _openPlayingQueueSheet() {
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (_) => PlayingQueueSheet(controller: widget.controller),
+    );
+  }
+
   void _selectCategory(LibraryCategory cat) {
     setState(() {
       _selectedCategory = cat;
@@ -670,6 +679,14 @@ class _AuraMusicHomeScreenState extends State<AuraMusicHomeScreen>
                   size: 19,
                   color: accent,
                 ),
+              ),
+              IconButton(
+                visualDensity: VisualDensity.compact,
+                constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+                padding: EdgeInsets.zero,
+                tooltip: '正在播放列表 (${ctrl.playlist.length})',
+                onPressed: _openPlayingQueueSheet,
+                icon: Icon(Icons.queue_music_rounded, size: 19, color: accent),
               ),
               IconButton(
                 visualDensity: VisualDensity.compact,
@@ -1369,14 +1386,39 @@ class _AuraMusicHomeScreenState extends State<AuraMusicHomeScreen>
                                 ],
                               ),
                             ),
-                            IconButton(
-                              tooltip: '切换深色极光 / 浅色磨砂玻璃',
-                              onPressed: ctrl.toggleGlassBrightnessMode,
-                              icon: Icon(
-                                isLight ? Icons.dark_mode_rounded : Icons.light_mode_rounded,
-                                size: 19,
-                                color: subColor,
-                              ),
+                            Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                TextButton.icon(
+                                  style: TextButton.styleFrom(
+                                    visualDensity: VisualDensity.compact,
+                                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                                    backgroundColor: accent.withValues(alpha: 0.14),
+                                    shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(12),
+                                    ),
+                                  ),
+                                  onPressed: _openPlayingQueueSheet,
+                                  icon: Icon(Icons.queue_music_rounded, size: 16, color: accent),
+                                  label: Text(
+                                    '播放列表 (${ctrl.playlist.length})',
+                                    style: TextStyle(
+                                      fontSize: 11.5,
+                                      fontWeight: FontWeight.w600,
+                                      color: textColor,
+                                    ),
+                                  ),
+                                ),
+                                IconButton(
+                                  tooltip: '切换深色极光 / 浅色磨砂玻璃',
+                                  onPressed: ctrl.toggleGlassBrightnessMode,
+                                  icon: Icon(
+                                    isLight ? Icons.dark_mode_rounded : Icons.light_mode_rounded,
+                                    size: 19,
+                                    color: subColor,
+                                  ),
+                                ),
+                              ],
                             ),
                           ],
                         ),
@@ -1802,11 +1844,11 @@ class _AuraMusicHomeScreenState extends State<AuraMusicHomeScreen>
                         ),
                       ),
                       IconButton(
-                        tooltip: inPlaylist ? '已在播放列表中' : '添加至播放列表',
+                        tooltip: inPlaylist ? '从播放列表中移除' : '添加至播放列表',
                         visualDensity: VisualDensity.compact,
                         constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
                         padding: EdgeInsets.zero,
-                        onPressed: () => ctrl.addToPlaylist(track),
+                        onPressed: () => ctrl.toggleInPlaylist(track),
                         icon: Icon(
                           inPlaylist
                               ? Icons.playlist_add_check_rounded

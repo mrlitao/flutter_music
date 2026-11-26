@@ -164,14 +164,12 @@ void FlutterWindow::RegisterAuraMusicChannel() {
               if (rate_f >= 0.5f && rate_f <= 2.0f) {
                 mfp_player_->SetRate(rate_f);
               }
-              if (pos_ms > 50) {
-                PROPVARIANT pos_var;
-                PropVariantInit(&pos_var);
-                pos_var.vt = VT_I8;
-                pos_var.hVal.QuadPart = static_cast<LONGLONG>(pos_ms) * 10000LL;
-                mfp_player_->SetPosition(MFP_POSITIONTYPE_100NS, &pos_var);
-                PropVariantClear(&pos_var);
-              }
+              PROPVARIANT pos_var;
+              PropVariantInit(&pos_var);
+              pos_var.vt = VT_I8;
+              pos_var.hVal.QuadPart = static_cast<LONGLONG>(pos_ms) * 10000LL;
+              mfp_player_->SetPosition(MFP_POSITIONTYPE_100NS, &pos_var);
+              PropVariantClear(&pos_var);
               mfp_player_->Play();
             }
 

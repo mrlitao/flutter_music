@@ -126,11 +126,9 @@ class PlatformAudioBridge {
       audio['volume'] = volume.clamp(0.0, 1.0).toJS;
       audio['playbackRate'] = speed.clamp(0.5, 2.0).toJS;
 
-      if (positionMs > 0) {
-        try {
-          audio['currentTime'] = (positionMs / 1000.0).toJS;
-        } catch (_) {}
-      }
+      try {
+        audio['currentTime'] = (positionMs / 1000.0).toJS;
+      } catch (_) {}
 
       final playPromise = audio.callMethod<JSObject?>('play'.toJS);
       if (playPromise != null) {

@@ -411,8 +411,14 @@ class AudioEngineController extends ChangeNotifier {
       }
     }
     if (newTracks.isNotEmpty) {
+      final activeId = _tracks.isNotEmpty ? currentTrack.id : null;
       _tracks = [...newTracks, ..._tracks];
-      _currentIndex = 0;
+      if (activeId != null) {
+        final preservedIdx = _tracks.indexWhere((t) => t.id == activeId);
+        _currentIndex = preservedIdx >= 0 ? preservedIdx : 0;
+      } else {
+        _currentIndex = 0;
+      }
       if (persist) {
         unawaited(_bridge.saveImportedTracks(_tracks));
       }
@@ -460,6 +466,45 @@ class AudioEngineController extends ChangeNotifier {
     } else {
       _statusMessage = '已在播放列表中: ${track.title}';
       notifyListeners();
+    }
+  }
+
+  /// Removes [trackId] from the active playback playlist.
+  /// If the currently playing track is removed:
+  /// - immediately plays the next track in the playlist, or
+  /// - stops playback if the playlist becomes empty.
+  Future<void> removeFromPlaylist(String trackId) async {
+    final idx = _playlist.indexWhere((t) => t.id == trackId);
+    if (idx < 0) return;
+
+    final bool wasCurrentTrack = currentTrack.id == trackId;
+    final removed = _playlist.removeAt(idx);
+
+    if (wasCurrentTrack) {
+      if (_playlist.isEmpty) {
+        await _bridge.stop();
+        _isPlaying = false;
+        _position = Duration.zero;
+        positionNotifier.value = Duration.zero;
+        _lastNotifiedLyricIndex = 0;
+        _statusMessage = '播放列表已清空，已停止播放';
+        notifyListeners();
+      } else {
+        final nextTrackItem = _playlist[idx % _playlist.length];
+        await selectTrack(nextTrackItem, autoPlay: true);
+      }
+    } else {
+      _statusMessage = '已从播放列表移除: ${removed.title}';
+      notifyListeners();
+    }
+  }
+
+  /// Toggles whether [track] is present in the active playback playlist.
+  void toggleInPlaylist(Track track) {
+    if (isInPlaylist(track.id)) {
+      unawaited(removeFromPlaylist(track.id));
+    } else {
+      addToPlaylist(track);
     }
   }
 
@@ -537,31 +582,38 @@ class AudioEngineController extends ChangeNotifier {
   }
 
   Future<void> nextTrack() async {
-    final List<Track> queue = _playlist.isNotEmpty ? _playlist : filteredTracks;
-    if (queue.isEmpty) return;
+    if (_playlist.isEmpty) return;
+    if (_playlist.length == 1) {
+      await selectTrack(_playlist.first, autoPlay: true);
+      return;
+    }
 
-    final int curQueueIdx = queue.indexWhere((t) => t.id == currentTrack.id);
-    if (_playMode == PlayMode.shuffle && queue.length > 1) {
+    final int curQueueIdx = _playlist.indexWhere((t) => t.id == currentTrack.id);
+    if (_playMode == PlayMode.shuffle) {
       final rand = math.Random();
       int nextQIdx = curQueueIdx < 0 ? 0 : curQueueIdx;
       while (nextQIdx == curQueueIdx) {
-        nextQIdx = rand.nextInt(queue.length);
+        nextQIdx = rand.nextInt(_playlist.length);
       }
-      await selectTrack(queue[nextQIdx], autoPlay: true);
+      await selectTrack(_playlist[nextQIdx], autoPlay: true);
     } else {
-      final int nextQIdx = curQueueIdx < 0 ? 0 : (curQueueIdx + 1) % queue.length;
-      await selectTrack(queue[nextQIdx], autoPlay: true);
+      final int nextQIdx = curQueueIdx < 0 ? 0 : (curQueueIdx + 1) % _playlist.length;
+      await selectTrack(_playlist[nextQIdx], autoPlay: true);
     }
   }
 
   Future<void> previousTrack() async {
-    final List<Track> queue = _playlist.isNotEmpty ? _playlist : filteredTracks;
-    if (queue.isEmpty) return;
+    if (_playlist.isEmpty) return;
+    if (_playlist.length == 1) {
+      await selectTrack(_playlist.first, autoPlay: true);
+      return;
+    }
 
-    final int curQueueIdx = queue.indexWhere((t) => t.id == currentTrack.id);
-    final int prevQIdx =
-        curQueueIdx < 0 ? queue.length - 1 : (curQueueIdx - 1 + queue.length) % queue.length;
-    await selectTrack(queue[prevQIdx], autoPlay: true);
+    final int curQueueIdx = _playlist.indexWhere((t) => t.id == currentTrack.id);
+    final int prevQIdx = curQueueIdx < 0
+        ? _playlist.length - 1
+        : (curQueueIdx - 1 + _playlist.length) % _playlist.length;
+    await selectTrack(_playlist[prevQIdx], autoPlay: true);
   }
 
   Future<void> seekTo(Duration target) async {

@@ -51,10 +51,8 @@ class MainFlutterWindow: NSWindow {
 
         if let player = self.avPlayer {
           player.volume = volume
-          if posMs > 50 {
-            let targetTime = CMTime(value: CMTimeValue(posMs), timescale: 1000)
-            player.seek(to: targetTime)
-          }
+          let targetTime = CMTime(value: CMTimeValue(posMs), timescale: 1000)
+          player.seek(to: targetTime)
           player.play()
           player.rate = speed
 
